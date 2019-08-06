@@ -20,14 +20,14 @@ matrix:
     - name: "Unit Tests a-d"
       env: TEST_GLOB="[a-d]*"
 
-    - name: "Unit Tests e-i"
-      env: TEST_GLOB="[e-i]*"
+    - name: "Unit Tests e-h"
+      env: TEST_GLOB="[e-h]*"
 
-    - name: "Unit Tests j-l"
-      env: TEST_GLOB="[j-l]*"
+    - name: "Unit Tests i-p"
+      env: TEST_GLOB="[i-p]*"
 
-    - name: "Unit Tests m-z"
-      env: TEST_GLOB="[m-z]*"
+    - name: "Unit Tests q-z"
+      env: TEST_GLOB="[q-z]*"
 
     - name: "Sphinx Documentation"
       script:
