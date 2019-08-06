@@ -24,10 +24,10 @@ matrix:
       env: TEST_GLOB="[i-l]*"
 
     - name: "Unit Tests m-sa"
-      env: TEST_GLOB="[m-sa]*"
+      env: TEST_GLOB="{[m-r]*,sa*}"
 
     - name: "Unit Tests sb-z"
-      env: TEST_GLOB="[sb-z]*"
+      env: TEST_GLOB="{s[b-z]*,[t-z]*}"
 
     - name: "Sphinx Documentation"
       script:
