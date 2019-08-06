@@ -17,17 +17,17 @@ script:
 matrix:
   include:
     # Big test suite. Run in parallel to decrease wall-clock time, and to avoid OOM error from leaks
-    - name: "Unit Tests a-d"
-      env: TEST_GLOB="[a-d]*"
+    - name: "Unit Tests a-g"
+      env: TEST_GLOB="[a-g]*"
 
-    - name: "Unit Tests e-h"
-      env: TEST_GLOB="[e-h]*"
+    - name: "Unit Tests h-m"
+      env: TEST_GLOB="[h-m]*"
 
-    - name: "Unit Tests i-p"
-      env: TEST_GLOB="[i-p]*"
+    - name: "Unit Tests m-t"
+      env: TEST_GLOB="[m-t]*"
 
-    - name: "Unit Tests q-z"
-      env: TEST_GLOB="[q-z]*"
+    - name: "Unit Tests t-z"
+      env: TEST_GLOB="[t-z]*"
 
     - name: "Sphinx Documentation"
       script:
