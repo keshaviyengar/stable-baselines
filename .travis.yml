@@ -2,6 +2,8 @@ language: python
 python:
   - "3.5"
 
+env: DOCKER_IMAGE=araffin/stable-baselines-cpu:v2.7.1
+
 notifications:
   email: false
 
@@ -9,7 +11,7 @@ services:
   - docker
 
 install:
-  - docker pull araffin/stable-baselines-cpu:v2.7.1
+  - docker pull ${DOCKER_IMAGE}
 
 script:
   - ./scripts/run_tests_travis.sh "${TEST_GLOB}"
@@ -32,9 +34,9 @@ jobs:
 
     - name: "Sphinx Documentation"
       script:
-        - 'docker run -it --rm --mount src=$(pwd),target=/root/code/stable-baselines,type=bind araffin/stable-baselines-cpu bash -c "cd /root/code/stable-baselines/ && pip install .[docs] && pushd docs/ && make clean && make html"'
+        - 'docker run -it --rm --mount src=$(pwd),target=/root/code/stable-baselines,type=bind ${DOCKER_IMAGE} bash -c "cd /root/code/stable-baselines/ && pip install .[docs] && pushd docs/ && make clean && make html"'
 
     - stage: Codacy Trigger
       script:
         # When all test coverage reports have been uploaded, instruct Codacy to start analysis.
-        - 'docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind bash -c "/root/code/codacy-coverage-reporter final"'
+              - 'docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind ${DOCKER_IMAGE} bash -c "/root/code/codacy-coverage-reporter final"'

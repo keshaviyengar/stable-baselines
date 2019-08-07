@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 
 DOCKER_CMD="docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind"
-DOCKER_IMAGE="araffin/stable-baselines-cpu:v2.7.0"
 BASH_CMD="cd /root/code/stable-baselines/ && pip install tensorflow==1.13.2 gym==0.14.0"
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <test glob>"
+  exit 1
+fi
+
+if [[ ${DOCKER_IMAGE} = "" ]]; then
+  echo "Need DOCKER_IMAGE environment variable to be set."
   exit 1
 fi
 
@@ -19,6 +23,11 @@ if [ "$TRAVIS_PULL_REQUEST" != "false" ]; then
       bash -c "${BASH_CMD} && \
                pytest --cov-config .coveragerc --cov-report term --cov=. -v tests/test_${TEST_GLOB}"
 else
+  if [[ ${CODACY_PROJECT_TOKEN} = "" ]]; then
+    echo "Need CODACY_PROJECT_TOKEN environment variable to be set."
+    exit 1
+  fi
+
   ${DOCKER_CMD} --env CODACY_PROJECT_TOKEN=${CODACY_PROJECT_TOKEN} ${DOCKER_IMAGE} \
       bash -c "${BASH_CMD} && \
                 pytest --cov-config .coveragerc --cov-report term --cov-report xml --cov=. -v tests/test_${TEST_GLOB} && \
