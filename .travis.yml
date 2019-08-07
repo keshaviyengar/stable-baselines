@@ -9,15 +9,16 @@ services:
   - docker
 
 install:
-  - docker pull araffin/stable-baselines-cpu:v2.7.0
+  - docker pull araffin/stable-baselines-cpu:v2.7.1
 
 script:
   - ./scripts/run_tests_travis.sh "${TEST_GLOB}"
 
-matrix:
+jobs:
   include:
     # Big test suite. Run in parallel to decrease wall-clock time, and to avoid OOM error from leaks
-    - name: "Unit Tests a-h"
+    - stage: Test
+      name: "Unit Tests a-h"
       env: TEST_GLOB="[a-h]*"
 
     - name: "Unit Tests i-l"
@@ -32,3 +33,8 @@ matrix:
     - name: "Sphinx Documentation"
       script:
         - 'docker run -it --rm --mount src=$(pwd),target=/root/code/stable-baselines,type=bind araffin/stable-baselines-cpu bash -c "cd /root/code/stable-baselines/ && pip install .[docs] && pushd docs/ && make clean && make html"'
+
+    - stage: Codacy Trigger
+      script:
+        # When all test coverage reports have been uploaded, instruct Codacy to start analysis.
+        - 'docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind bash -c "/root/code/codacy-coverage-reporter final"'

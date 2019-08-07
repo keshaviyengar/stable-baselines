@@ -19,9 +19,9 @@ if [ "$TRAVIS_PULL_REQUEST" != "false" ]; then
       bash -c "${BASH_CMD} && \
                pytest --cov-config .coveragerc --cov-report term --cov=. -v tests/test_${TEST_GLOB}"
 else
-  ${DOCKER_CMD} --env CODACY_PROJECT_TOKEN=$CODACY_PROJECT_TOKEN ${DOCKER_IMAGE} \
+  ${DOCKER_CMD} --env CODACY_PROJECT_TOKEN=${CODACY_PROJECT_TOKEN} ${DOCKER_IMAGE} \
       bash -c "${BASH_CMD} && \
                 pytest --cov-config .coveragerc --cov-report term --cov-report xml --cov=. -v tests/test_${TEST_GLOB} && \
-                python-codacy-coverage -r coverage.xml --token=$CODACY_PROJECT_TOKEN"
+                /root/code/codacy-coverage-reporter report -l python -r coverage.xml --partial"
 fi
 
