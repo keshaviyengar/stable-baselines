@@ -29,4 +29,11 @@ RUN \
 
 ENV PATH=$VENV/bin:$PATH
 
+RUN apt-get -y update && apt-get -y install curl jq
+
+# Codacy code coverage report: used for partial code coverage reporting
+RUN cd $CODE_DIR &&\
+    curl -Ls -o codacy-coverage-reporter "$(curl -Ls https://api.github.com/repos/codacy/codacy-coverage-reporter/releases/latest | jq -r '.assets | map({name, browser_download_url} | select(.name | contains("codacy-coverage-reporter-linux"))) | .[0].browser_download_url')" &&\
+    chmod +x codacy-coverage-reporter
+
 CMD /bin/bash
