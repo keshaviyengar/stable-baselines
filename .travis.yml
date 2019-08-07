@@ -41,4 +41,4 @@ jobs:
     - stage: Codacy Trigger
       script:
         # When all test coverage reports have been uploaded, instruct Codacy to start analysis.
-              - 'docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind --env CODACY_PROJECT_TOKEN=${CODACY_PROJECT_TOKEN} ${DOCKER_IMAGE} bash -c "/root/code/codacy-coverage-reporter final"'
+        - 'docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind --env CODACY_PROJECT_TOKEN=${CODACY_PROJECT_TOKEN} ${DOCKER_IMAGE} bash -c "cd /root/code/stable-baselines/ && /root/code/codacy-coverage-reporter final"'

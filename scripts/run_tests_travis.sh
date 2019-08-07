@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 DOCKER_CMD="docker run -it --rm --network host --ipc=host --mount src=$(pwd),target=/root/code/stable-baselines,type=bind"
-BASH_CMD="cd /root/code/stable-baselines/ && pip install tensorflow==1.13.2 gym==0.14.0"
+BASH_CMD="cd /root/code/stable-baselines/"
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <test glob>"
@@ -33,4 +33,3 @@ else
                 pytest --cov-config .coveragerc --cov-report term --cov-report xml --cov=. -v tests/test_${TEST_GLOB} && \
                 /root/code/codacy-coverage-reporter report -l python -r coverage.xml --partial"
 fi
-
