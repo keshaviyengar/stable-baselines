@@ -2,7 +2,9 @@ language: python
 python:
   - "3.5"
 
-env: DOCKER_IMAGE=araffin/stable-baselines-cpu:v2.7.1
+env:
+  global:
+    - DOCKER_IMAGE=araffin/stable-baselines-cpu:v2.7.1
 
 notifications:
   email: false
