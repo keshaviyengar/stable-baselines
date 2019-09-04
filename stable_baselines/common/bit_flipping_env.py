@@ -94,7 +94,8 @@ class BitFlippingEnv(GoalEnv):
         done = reward == 0
         self.current_step += 1
         # Episode terminate when we reached the goal or the max number of steps
-        info = {'is_success': done}
+        error = np.linalg.norm(obs['achieved_goal'] - obs['desired_goal'])
+        info = {'is_success': done, 'error': error}
         done = done or self.current_step >= self.max_steps
         return obs, reward, done, info
 

@@ -823,6 +823,7 @@ class DDPG(OffPolicyRLModel):
             episode_rewards_history = deque(maxlen=100)
             self.episode_reward = np.zeros((1,))
             episode_successes = []
+
             with self.sess.as_default(), self.graph.as_default():
                 # Prepare everything.
                 self._reset()
@@ -839,11 +840,13 @@ class DDPG(OffPolicyRLModel):
                 start_time = time.time()
 
                 epoch_episode_rewards = []
+                epoch_episode_errors = []
                 epoch_episode_steps = []
                 epoch_actor_losses = []
                 epoch_critic_losses = []
                 epoch_adaptive_distances = []
                 eval_episode_rewards = []
+                eval_episode_errors = []
                 eval_qs = []
                 epoch_actions = []
                 epoch_qs = []
@@ -900,6 +903,7 @@ class DDPG(OffPolicyRLModel):
                             if done:
                                 # Episode done.
                                 epoch_episode_rewards.append(episode_reward)
+                                epoch_episode_errors.append(info['error'])
                                 episode_rewards_history.append(episode_reward)
                                 epoch_episode_steps.append(episode_step)
                                 episode_reward = 0.
@@ -950,7 +954,7 @@ class DDPG(OffPolicyRLModel):
                                     return self
 
                                 eval_action, eval_q = self._policy(eval_obs, apply_noise=False, compute_q=True)
-                                eval_obs, eval_r, eval_done, _ = self.eval_env.step(eval_action *
+                                eval_obs, eval_r, eval_done, info = self.eval_env.step(eval_action *
                                                                                     np.abs(self.action_space.low))
                                 if self.render_eval:
                                     self.eval_env.render()
@@ -961,6 +965,7 @@ class DDPG(OffPolicyRLModel):
                                     if not isinstance(self.env, VecEnv):
                                         eval_obs = self.eval_env.reset()
                                     eval_episode_rewards.append(eval_episode_reward)
+                                    eval_episode_errors.append(info['error'])
                                     eval_episode_rewards_history.append(eval_episode_reward)
                                     eval_episode_reward = 0.
 
@@ -972,6 +977,8 @@ class DDPG(OffPolicyRLModel):
                     combined_stats = stats.copy()
                     combined_stats['rollout/return'] = np.mean(epoch_episode_rewards)
                     combined_stats['rollout/return_history'] = np.mean(episode_rewards_history)
+                    combined_stats['rollout/errors'] = np.mean(epoch_episode_errors)
+                    combined_stats['rollout/errors_dev'] = np.std(epoch_episode_errors)
                     combined_stats['rollout/episode_steps'] = np.mean(epoch_episode_steps)
                     combined_stats['rollout/actions_mean'] = np.mean(epoch_actions)
                     combined_stats['rollout/Q_mean'] = np.mean(epoch_qs)
@@ -988,6 +995,8 @@ class DDPG(OffPolicyRLModel):
                     if self.eval_env is not None:
                         combined_stats['eval/return'] = np.mean(eval_episode_rewards)
                         combined_stats['eval/return_history'] = np.mean(eval_episode_rewards_history)
+                        combined_stats['eval/errors'] = np.mean(eval_episode_errors)
+                        combined_stats['eval/errors_dev'] = np.std(eval_episode_errors)
                         combined_stats['eval/Q'] = np.mean(eval_qs)
                         combined_stats['eval/episodes'] = len(eval_episode_rewards)
 
