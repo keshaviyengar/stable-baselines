@@ -1,7 +1,4 @@
 import time
-import sys
-import multiprocessing
-from collections import deque
 
 import gym
 import numpy as np
@@ -45,15 +42,16 @@ class PPO2(ActorCriticRLModel):
     :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
     :param full_tensorboard_log: (bool) enable additional logging when using tensorboard
         WARNING: this logging can take a lot of space quickly
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
-
     def __init__(self, policy, env, gamma=0.99, n_steps=128, ent_coef=0.01, learning_rate=2.5e-4, vf_coef=0.5,
                  max_grad_norm=0.5, lam=0.95, nminibatches=4, noptepochs=4, cliprange=0.2, cliprange_vf=None,
                  verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None,
-                 full_tensorboard_log=False):
-
-        super(PPO2, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True,
-                                   _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs)
+                 full_tensorboard_log=False, seed=None, n_cpu_tf_sess=None):
 
         self.learning_rate = learning_rate
         self.cliprange = cliprange
@@ -69,8 +67,6 @@ class PPO2(ActorCriticRLModel):
         self.tensorboard_log = tensorboard_log
         self.full_tensorboard_log = full_tensorboard_log
 
-        self.graph = None
-        self.sess = None
         self.action_ph = None
         self.advs_ph = None
         self.rewards_ph = None
@@ -83,21 +79,24 @@ class PPO2(ActorCriticRLModel):
         self.pg_loss = None
         self.approxkl = None
         self.clipfrac = None
-        self.params = None
         self._train = None
         self.loss_names = None
         self.train_model = None
         self.act_model = None
-        self.step = None
-        self.proba_step = None
         self.value = None
-        self.initial_state = None
         self.n_batch = None
         self.summary = None
-        self.episode_reward = None
+
+        super().__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True,
+                         _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs,
+                         seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         if _init_setup_model:
             self.setup_model()
+
+    def _make_runner(self):
+        return Runner(env=self.env, model=self, n_steps=self.n_steps,
+                      gamma=self.gamma, lam=self.lam)
 
     def _get_pretrain_placeholders(self):
         policy = self.act_model
@@ -113,13 +112,10 @@ class PPO2(ActorCriticRLModel):
 
             self.n_batch = self.n_envs * self.n_steps
 
-            n_cpu = multiprocessing.cpu_count()
-            if sys.platform == 'darwin':
-                n_cpu //= 2
-
             self.graph = tf.Graph()
             with self.graph.as_default():
-                self.sess = tf_util.make_session(num_cpu=n_cpu, graph=self.graph)
+                self.set_random_seed(self.seed)
+                self.sess = tf_util.make_session(num_cpu=self.n_cpu_tf_sess, graph=self.graph)
 
                 n_batch_step = None
                 n_batch_train = None
@@ -219,7 +215,7 @@ class PPO2(ActorCriticRLModel):
                     if self.clip_range_vf_ph is not None:
                         tf.summary.scalar('clip_range_vf', tf.reduce_mean(self.clip_range_vf_ph))
 
-                    tf.summary.scalar('old_neglog_action_probabilty', tf.reduce_mean(self.old_neglog_pac_ph))
+                    tf.summary.scalar('old_neglog_action_probability', tf.reduce_mean(self.old_neglog_pac_ph))
                     tf.summary.scalar('old_value_pred', tf.reduce_mean(self.old_vpred_ph))
 
                     if self.full_tensorboard_log:
@@ -227,7 +223,7 @@ class PPO2(ActorCriticRLModel):
                         tf.summary.histogram('learning_rate', self.learning_rate_ph)
                         tf.summary.histogram('advantage', self.advs_ph)
                         tf.summary.histogram('clip_range', self.clip_range_ph)
-                        tf.summary.histogram('old_neglog_action_probabilty', self.old_neglog_pac_ph)
+                        tf.summary.histogram('old_neglog_action_probability', self.old_neglog_pac_ph)
                         tf.summary.histogram('old_value_pred', self.old_vpred_ph)
                         if tf_util.is_image(self.observation_space):
                             tf.summary.image('observation', train_model.obs_ph)
@@ -302,7 +298,7 @@ class PPO2(ActorCriticRLModel):
 
         return policy_loss, value_loss, policy_entropy, approxkl, clipfrac
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=1, tb_log_name="PPO2",
+    def learn(self, total_timesteps, callback=None, log_interval=1, tb_log_name="PPO2",
               reset_num_timesteps=True):
         # Transform to callable if needed
         self.learning_rate = get_schedule_fn(self.learning_rate)
@@ -313,17 +309,17 @@ class PPO2(ActorCriticRLModel):
 
         with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name, new_tb_log) \
                 as writer:
-            self._setup_learn(seed)
+            self._setup_learn()
 
-            runner = Runner(env=self.env, model=self, n_steps=self.n_steps, gamma=self.gamma, lam=self.lam)
-            self.episode_reward = np.zeros((self.n_envs,))
-
-            ep_info_buf = deque(maxlen=100)
             t_first_start = time.time()
 
             n_updates = total_timesteps // self.n_batch
             for update in range(1, n_updates + 1):
-                assert self.n_batch % self.nminibatches == 0
+                assert self.n_batch % self.nminibatches == 0, ("The number of minibatches (`nminibatches`) "
+                                                               "is not a factor of the total number of samples "
+                                                               "collected per rollout (`n_batch`), "
+                                                               "some samples won't be used."
+                                                               )
                 batch_size = self.n_batch // self.nminibatches
                 t_start = time.time()
                 frac = 1.0 - (update - 1.0) / n_updates
@@ -331,9 +327,9 @@ class PPO2(ActorCriticRLModel):
                 cliprange_now = self.cliprange(frac)
                 cliprange_vf_now = cliprange_vf(frac)
                 # true_reward is the reward without discount
-                obs, returns, masks, actions, values, neglogpacs, states, ep_infos, true_reward = runner.run()
+                obs, returns, masks, actions, values, neglogpacs, states, ep_infos, true_reward = self.runner.run()
                 self.num_timesteps += self.n_batch
-                ep_info_buf.extend(ep_infos)
+                self.ep_info_buf.extend(ep_infos)
                 mb_loss_vals = []
                 if states is None:  # nonrecurrent version
                     update_fac = self.n_batch // self.nminibatches // self.noptepochs + 1
@@ -373,10 +369,10 @@ class PPO2(ActorCriticRLModel):
                 fps = int(self.n_batch / (t_now - t_start))
 
                 if writer is not None:
-                    self.episode_reward = total_episode_reward_logger(self.episode_reward,
-                                                                      true_reward.reshape((self.n_envs, self.n_steps)),
-                                                                      masks.reshape((self.n_envs, self.n_steps)),
-                                                                      writer, self.num_timesteps)
+                    total_episode_reward_logger(self.episode_reward,
+                                                true_reward.reshape((self.n_envs, self.n_steps)),
+                                                masks.reshape((self.n_envs, self.n_steps)),
+                                                writer, self.num_timesteps)
 
                 if self.verbose >= 1 and (update % log_interval == 0 or update == 1):
                     explained_var = explained_variance(values, returns)
@@ -385,9 +381,9 @@ class PPO2(ActorCriticRLModel):
                     logger.logkv("total_timesteps", self.num_timesteps)
                     logger.logkv("fps", fps)
                     logger.logkv("explained_variance", float(explained_var))
-                    if len(ep_info_buf) > 0 and len(ep_info_buf[0]) > 0:
-                        logger.logkv('ep_reward_mean', safe_mean([ep_info['r'] for ep_info in ep_info_buf]))
-                        logger.logkv('ep_len_mean', safe_mean([ep_info['l'] for ep_info in ep_info_buf]))
+                    if len(self.ep_info_buf) > 0 and len(self.ep_info_buf[0]) > 0:
+                        logger.logkv('ep_reward_mean', safe_mean([ep_info['r'] for ep_info in self.ep_info_buf]))
+                        logger.logkv('ep_len_mean', safe_mean([ep_info['l'] for ep_info in self.ep_info_buf]))
                     logger.logkv('time_elapsed', t_start - t_first_start)
                     for (loss_val, loss_name) in zip(loss_vals, self.loss_names):
                         logger.logkv(loss_name, loss_val)
@@ -401,7 +397,7 @@ class PPO2(ActorCriticRLModel):
 
             return self
 
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         data = {
             "gamma": self.gamma,
             "n_steps": self.n_steps,
@@ -419,13 +415,15 @@ class PPO2(ActorCriticRLModel):
             "observation_space": self.observation_space,
             "action_space": self.action_space,
             "n_envs": self.n_envs,
+            "n_cpu_tf_sess": self.n_cpu_tf_sess,
+            "seed": self.seed,
             "_vectorize_action": self._vectorize_action,
             "policy_kwargs": self.policy_kwargs
         }
 
         params_to_save = self.get_parameters()
 
-        self._save_to_file(save_path, data=data, params=params_to_save)
+        self._save_to_file(save_path, data=data, params=params_to_save, cloudpickle=cloudpickle)
 
 
 class Runner(AbstractEnvRunner):

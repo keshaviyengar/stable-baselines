@@ -77,7 +77,7 @@ def test_custom_policy(request, model_name):
 
         # create and train
         model = model_class(policy, env)
-        model.learn(total_timesteps=100, seed=0)
+        model.learn(total_timesteps=100)
 
         env = model.get_env()
         # predict and measure the acc reward
@@ -89,7 +89,7 @@ def test_custom_policy(request, model_name):
                 model.action_probability(obs)
             obs, _, _, _ = env.step(action)
         # saving
-        model_fname = './test_model_{}.pkl'.format(request.node.name)
+        model_fname = './test_model_{}.zip'.format(request.node.name)
         model.save(model_fname)
         del model, env
         # loading
@@ -107,7 +107,7 @@ def test_custom_policy_kwargs(request, model_name):
     :param model_name: (str) A RL model
     """
 
-    model_fname = './test_model_{}.pkl'.format(request.node.name)
+    model_fname = './test_model_{}.zip'.format(request.node.name)
 
     try:
         model_class, policy, policy_kwargs = MODEL_DICT[model_name]
@@ -119,7 +119,7 @@ def test_custom_policy_kwargs(request, model_name):
 
         # create and train
         model = model_class(policy, env, policy_kwargs=policy_kwargs)
-        model.learn(total_timesteps=100, seed=0)
+        model.learn(total_timesteps=100)
 
         model.save(model_fname)
         del model
@@ -130,12 +130,12 @@ def test_custom_policy_kwargs(request, model_name):
 
         # Load with specifying policy_kwargs
         model = model_class.load(model_fname, policy=policy, env=env, policy_kwargs=policy_kwargs)
-        model.learn(total_timesteps=100, seed=0)
+        model.learn(total_timesteps=100)
         del model
 
         # Load without specifying policy_kwargs
         model = model_class.load(model_fname, policy=policy, env=env)
-        model.learn(total_timesteps=100, seed=0)
+        model.learn(total_timesteps=100)
         del model
 
         # Load with different wrong policy_kwargs
