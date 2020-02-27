@@ -855,6 +855,8 @@ class DDPG(OffPolicyRLModel):
                 epoch_qs = []
                 epoch_episodes = 0
                 epoch = 0
+                train_goal_tol = 0
+                eval_goal_tol = 0
                 while True:
                     for _ in range(log_interval):
                         # Perform rollouts.
@@ -911,6 +913,7 @@ class DDPG(OffPolicyRLModel):
                                 # Episode done.
                                 epoch_episode_rewards.append(episode_reward)
                                 epoch_episode_errors.append(info['error'])
+                                train_goal_tol = info['goal_tolerance']
                                 episode_rewards_history.append(episode_reward)
                                 epoch_episode_steps.append(episode_step)
                                 episode_reward = 0.
@@ -973,6 +976,7 @@ class DDPG(OffPolicyRLModel):
                                         eval_obs = self.eval_env.reset()
                                     eval_episode_rewards.append(eval_episode_reward)
                                     eval_episode_errors.append(info['error'])
+                                    eval_goal_tol = info['goal_tolerance']
                                     eval_episode_rewards_history.append(eval_episode_reward)
                                     eval_episode_reward = 0.
 
@@ -991,6 +995,7 @@ class DDPG(OffPolicyRLModel):
                     combined_stats['rollout/Q_mean'] = np.mean(epoch_qs)
                     combined_stats['train/loss_actor'] = np.mean(epoch_actor_losses)
                     combined_stats['train/loss_critic'] = np.mean(epoch_critic_losses)
+                    combined_stats['train/goal_tolerance'] = train_goal_tol
                     if len(epoch_adaptive_distances) != 0:
                         combined_stats['train/param_noise_distance'] = np.mean(epoch_adaptive_distances)
                     combined_stats['total/duration'] = duration
@@ -1006,6 +1011,7 @@ class DDPG(OffPolicyRLModel):
                         combined_stats['eval/errors_dev'] = np.std(eval_episode_errors)
                         combined_stats['eval/Q'] = np.mean(eval_qs)
                         combined_stats['eval/episodes'] = len(eval_episode_rewards)
+                        combined_stats['eval/goal_tolerance'] = eval_goal_tol
 
                     def as_scalar(scalar):
                         """
