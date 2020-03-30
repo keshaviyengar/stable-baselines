@@ -271,9 +271,12 @@ Documentation:
 ^^^^^^^^^^^^^^
 - Add WaveRL project (@jaberkow)
 - Add Fenics-DRL project (@DonsetPG)
+<<<<<<< HEAD
 - Fix and rename custom policy names (@eavelardev)
 - Add documentation on exporting models.
 - Update maintainers list (Welcome to @Miffyli)
+=======
+>>>>>>> parent of 647f5bc... Fix and rename custom policy names (#444)
 
 
 Release 2.7.0 (2019-07-31)
@@ -686,6 +689,4 @@ In random order...
 Thanks to @bjmuld @iambenzo @iandanforth @r7vme @brendenpetersen @huvar @abhiskk @JohannesAck
 @EliasHasle @mrakgr @Bleyddyn @antoine-galataud @junhyeokahn @AdamGleave @keshaviyengar @tperol
 @XMaster96 @kantneel @Pastafarianist @GerardMaggiolino @PatrickWalter214 @yutingsz @sc420 @Aaahh @billtubbs
-@Miffyli @dwiel @miguelrass @qxcv @jaberkow @eavelardev @ruifeng96150 @pedrohbtp @srivatsankrishnan @evilsocket
-@MarvineGothic @jdossgollin @SyllogismRXS @rusu24edward @jbulow @Antymon @seheevic @justinkterry @edbeeching
-@flodorner @KuKuXia @NeoExtended @solliet @mmcenta @richardwu @tirafesi @caburu @johannes-dornheim
+@Miffyli @dwiel @miguelrass @qxcv @jaberkow

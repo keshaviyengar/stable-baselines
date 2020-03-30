@@ -149,14 +149,14 @@ You can easily define a custom architecture for the policy network:
   from stable_baselines import DDPG
 
   # Custom MLP policy of two layers of size 16 each
-  class CustomDDPGPolicy(FeedForwardPolicy):
+  class CustomPolicy(FeedForwardPolicy):
       def __init__(self, *args, **kwargs):
-          super(CustomDDPGPolicy, self).__init__(*args, **kwargs,
+          super(CustomPolicy, self).__init__(*args, **kwargs,
                                              layers=[16, 16],
                                              layer_norm=False,
                                              feature_extraction="mlp")
 
 
-  model = DDPG(CustomDDPGPolicy, 'Pendulum-v0', verbose=1)
+  model = DDPG(CustomPolicy, env, verbose=1)
   # Train the agent
   model.learn(total_timesteps=100000)
