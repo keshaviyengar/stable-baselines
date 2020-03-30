@@ -15,10 +15,10 @@ from stable_baselines import logger
 from stable_baselines.common import tf_util, OffPolicyRLModel, SetVerbosity, TensorboardWriter
 from stable_baselines.common.vec_env import VecEnv
 from stable_baselines.common.mpi_adam import MpiAdam
-from stable_baselines.ddpg.policies import DDPGPolicy
+from stable_baselines.common.buffers import ReplayBuffer
+from stable_baselines.common.math_util import unscale_action, scale_action
 from stable_baselines.common.mpi_running_mean_std import RunningMeanStd
-from stable_baselines.a2c.utils import total_episode_reward_logger
-from stable_baselines.deepq.replay_buffer import ReplayBuffer
+from stable_baselines.ddpg.policies import DDPGPolicy
 
 
 def normalize(tensor, stats):
@@ -127,7 +127,7 @@ def get_perturbed_actor_updates(actor, perturbed_actor, param_noise_stddev, verb
         if var in get_perturbable_vars(actor):
             if verbose >= 2:
                 logger.info('  {} <- {} + noise'.format(perturbed_var.name, var.name))
-            # Add gaussian noise to the parameter
+            # Add Gaussian noise to the parameter
             updates.append(tf.assign(perturbed_var,
                                      var + tf.random_normal(tf.shape(var), mean=0., stddev=param_noise_stddev)))
         else:
@@ -156,7 +156,7 @@ class DDPG(OffPolicyRLModel):
     :param eval_env: (Gym Environment) the evaluation environment (can be None)
     :param nb_train_steps: (int) the number of training steps
     :param nb_rollout_steps: (int) the number of rollout steps
-    :param nb_eval_steps: (int) the number of evalutation steps
+    :param nb_eval_steps: (int) the number of evaluation steps
     :param param_noise: (AdaptiveParamNoiseSpec) the parameter noise type (can be None)
     :param action_noise: (ActionNoise) the action noise type (can be None)
     :param param_noise_adaption_interval: (int) apply param noise every N steps
@@ -174,7 +174,7 @@ class DDPG(OffPolicyRLModel):
     :param clip_norm: (float) clip the gradients (disabled if None)
     :param reward_scale: (float) the value the reward should be scaled by
     :param render: (bool) enable rendering of the environment
-    :param render_eval: (bool) enable rendering of the evalution environment
+    :param render_eval: (bool) enable rendering of the evaluation environment
     :param memory_limit: (int) the max number of transitions to store, size of the replay buffer
 
         .. deprecated:: 2.6.0
@@ -190,8 +190,12 @@ class DDPG(OffPolicyRLModel):
     :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
     :param full_tensorboard_log: (bool) enable additional logging when using tensorboard
         WARNING: this logging can take a lot of space quickly
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
-
     def __init__(self, policy, env, gamma=0.99, memory_policy=None, eval_env=None, nb_train_steps=50,
                  nb_rollout_steps=100, nb_eval_steps=100, param_noise=None, action_noise=None,
                  normalize_observations=False, tau=0.001, batch_size=128, param_noise_adaption_interval=50,
@@ -199,11 +203,12 @@ class DDPG(OffPolicyRLModel):
                  return_range=(-np.inf, np.inf), actor_lr=1e-4, critic_lr=1e-3, clip_norm=None, reward_scale=1.,
                  render=False, render_eval=False, memory_limit=None, buffer_size=50000, random_exploration=0.0,
                  verbose=0, tensorboard_log=None, _init_setup_model=True, policy_kwargs=None,
-                 full_tensorboard_log=False):
+                 full_tensorboard_log=False, seed=None, n_cpu_tf_sess=1):
 
         super(DDPG, self).__init__(policy=policy, env=env, replay_buffer=None,
                                    verbose=verbose, policy_base=DDPGPolicy,
-                                   requires_vec_env=False, policy_kwargs=policy_kwargs)
+                                   requires_vec_env=False, policy_kwargs=policy_kwargs,
+                                   seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         # Parameters.
         self.gamma = gamma
@@ -294,7 +299,6 @@ class DDPG(OffPolicyRLModel):
         self.adaptive_param_noise_actor = None
         self.params = None
         self.summary = None
-        self.episode_reward = None
         self.tb_seen_steps = None
 
         self.target_params = None
@@ -307,7 +311,7 @@ class DDPG(OffPolicyRLModel):
     def _get_pretrain_placeholders(self):
         policy = self.policy_tf
         # Rescale
-        deterministic_action = self.actor_tf * np.abs(self.action_space.low)
+        deterministic_action = unscale_action(self.action_space, self.actor_tf)
         return policy.obs_ph, self.actions, deterministic_action
 
     def setup_model(self):
@@ -320,7 +324,8 @@ class DDPG(OffPolicyRLModel):
 
             self.graph = tf.Graph()
             with self.graph.as_default():
-                self.sess = tf_util.single_threaded_session(graph=self.graph)
+                self.set_random_seed(self.seed)
+                self.sess = tf_util.make_session(num_cpu=self.n_cpu_tf_sess, graph=self.graph)
 
                 self.replay_buffer = ReplayBuffer(self.buffer_size)
 
@@ -616,7 +621,6 @@ class DDPG(OffPolicyRLModel):
         action = action.flatten()
         if self.action_noise is not None and apply_noise:
             noise = self.action_noise()
-            assert noise.shape == action.shape
             action += noise
         action = np.clip(action, -1, 1)
         return action, q_value
@@ -646,7 +650,8 @@ class DDPG(OffPolicyRLModel):
         :return: (float, float) critic loss, actor loss
         """
         # Get a batch
-        obs, actions, rewards, next_obs, terminals = self.replay_buffer.sample(batch_size=self.batch_size)
+        obs, actions, rewards, next_obs, terminals = self.replay_buffer.sample(batch_size=self.batch_size,
+                                                                               env=self._vec_normalize_env)
         # Reshape to match previous behavior and placeholder shape
         rewards = rewards.reshape(-1, 1)
         terminals = terminals.reshape(-1, 1)
@@ -731,7 +736,8 @@ class DDPG(OffPolicyRLModel):
         if self.stats_sample is None:
             # Get a sample and keep that fixed for all further computations.
             # This allows us to estimate the change in value for the same set of inputs.
-            obs, actions, rewards, next_obs, terminals = self.replay_buffer.sample(batch_size=self.batch_size)
+            obs, actions, rewards, next_obs, terminals = self.replay_buffer.sample(batch_size=self.batch_size,
+                                                                                   env=self._vec_normalize_env)
             self.stats_sample = {
                 'obs': obs,
                 'actions': actions,
@@ -773,7 +779,7 @@ class DDPG(OffPolicyRLModel):
             return 0.
 
         # Perturb a separate copy of the policy to adjust the scale for the next "real" perturbation.
-        obs, *_ = self.replay_buffer.sample(batch_size=self.batch_size)
+        obs, *_ = self.replay_buffer.sample(batch_size=self.batch_size, env=self._vec_normalize_env)
         self.sess.run(self.perturb_adaptive_policy_ops, feed_dict={
             self.param_noise_stddev: self.param_noise.current_stddev,
         })
@@ -797,37 +803,43 @@ class DDPG(OffPolicyRLModel):
                 self.param_noise_stddev: self.param_noise.current_stddev,
             })
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="DDPG",
+    def learn(self, total_timesteps, callback=None, log_interval=100, tb_log_name="DDPG",
               reset_num_timesteps=True, replay_wrapper=None):
 
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
+        callback = self._init_callback(callback)
 
         if replay_wrapper is not None:
             self.replay_buffer = replay_wrapper(self.replay_buffer)
 
         with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name, new_tb_log) \
                 as writer:
-            self._setup_learn(seed)
+            self._setup_learn()
 
             # a list for tensorboard logging, to prevent logging with the same step number, if it already occured
             self.tb_seen_steps = []
 
             rank = MPI.COMM_WORLD.Get_rank()
-            # we assume symmetric actions.
-            assert np.all(np.abs(self.env.action_space.low) == self.env.action_space.high)
+
             if self.verbose >= 2:
                 logger.log('Using agent with the following configuration:')
                 logger.log(str(self.__dict__.items()))
 
             eval_episode_rewards_history = deque(maxlen=100)
             episode_rewards_history = deque(maxlen=100)
-            self.episode_reward = np.zeros((1,))
             episode_successes = []
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 950c2a5bf95a9fa908be26fd5db11aa60cfa2b2a
             with self.sess.as_default(), self.graph.as_default():
                 # Prepare everything.
                 self._reset()
                 obs = self.env.reset()
+                # Retrieve unnormalized observation for saving into the buffer
+                if self._vec_normalize_env is not None:
+                    obs_ = self._vec_normalize_env.get_original_obs().squeeze()
                 eval_obs = None
                 if self.eval_env is not None:
                     eval_obs = self.eval_env.reset()
@@ -852,11 +864,17 @@ class DDPG(OffPolicyRLModel):
                 epoch_qs = []
                 epoch_episodes = 0
                 epoch = 0
+
+                callback.on_training_start(locals(), globals())
+
                 while True:
                     for _ in range(log_interval):
+                        callback.on_rollout_start()
                         # Perform rollouts.
                         for _ in range(self.nb_rollout_steps):
+
                             if total_steps >= total_timesteps:
+                                callback.on_training_end()
                                 return self
 
                             # Predict next action.
@@ -868,37 +886,55 @@ class DDPG(OffPolicyRLModel):
                                 self.env.render()
 
                             # Randomly sample actions from a uniform distribution
-                            # with a probabilty self.random_exploration (used in HER + DDPG)
+                            # with a probability self.random_exploration (used in HER + DDPG)
                             if np.random.rand() < self.random_exploration:
-                                rescaled_action = action = self.action_space.sample()
+                                # actions sampled from action space are from range specific to the environment
+                                # but algorithm operates on tanh-squashed actions therefore simple scaling is used
+                                unscaled_action = self.action_space.sample()
+                                action = scale_action(self.action_space, unscaled_action)
                             else:
-                                rescaled_action = action * np.abs(self.action_space.low)
+                                # inferred actions need to be transformed to environment action_space before stepping
+                                unscaled_action = unscale_action(self.action_space, action)
 
-                            new_obs, reward, done, info = self.env.step(rescaled_action)
+                            new_obs, reward, done, info = self.env.step(unscaled_action)
 
-                            if writer is not None:
-                                ep_rew = np.array([reward]).reshape((1, -1))
-                                ep_done = np.array([done]).reshape((1, -1))
-                                self.episode_reward = total_episode_reward_logger(self.episode_reward, ep_rew, ep_done,
-                                                                                  writer, self.num_timesteps)
+                            self.num_timesteps += 1
+
+                            if callback.on_step() is False:
+                                callback.on_training_end()
+                                return self
+
                             step += 1
                             total_steps += 1
-                            self.num_timesteps += 1
                             if rank == 0 and self.render:
                                 self.env.render()
-                            episode_reward += reward
-                            episode_step += 1
 
                             # Book-keeping.
                             epoch_actions.append(action)
                             epoch_qs.append(q_value)
-                            self._store_transition(obs, action, reward, new_obs, done)
+
+                            # Store only the unnormalized version
+                            if self._vec_normalize_env is not None:
+                                new_obs_ = self._vec_normalize_env.get_original_obs().squeeze()
+                                reward_ = self._vec_normalize_env.get_original_reward().squeeze()
+                            else:
+                                # Avoid changing the original ones
+                                obs_, new_obs_, reward_ = obs, new_obs, reward
+
+                            self._store_transition(obs_, action, reward_, new_obs_, done)
                             obs = new_obs
-                            if callback is not None:
-                                # Only stop training if return value is False, not when it is None.
-                                # This is for backwards compatibility with callbacks that have no return statement.
-                                if callback(locals(), globals()) is False:
-                                    return self
+                            # Save the unnormalized observation
+                            if self._vec_normalize_env is not None:
+                                obs_ = new_obs_
+
+                            episode_reward += reward_
+                            episode_step += 1
+
+                            if writer is not None:
+                                ep_rew = np.array([reward_]).reshape((1, -1))
+                                ep_done = np.array([done]).reshape((1, -1))
+                                tf_util.total_episode_reward_logger(self.episode_reward, ep_rew, ep_done,
+                                                                    writer, self.num_timesteps)
 
                             if done:
                                 # Episode done.
@@ -919,6 +955,7 @@ class DDPG(OffPolicyRLModel):
                                 if not isinstance(self.env, VecEnv):
                                     obs = self.env.reset()
 
+                        callback.on_rollout_end()
                         # Train.
                         epoch_actor_losses = []
                         epoch_critic_losses = []
@@ -954,8 +991,8 @@ class DDPG(OffPolicyRLModel):
                                     return self
 
                                 eval_action, eval_q = self._policy(eval_obs, apply_noise=False, compute_q=True)
-                                eval_obs, eval_r, eval_done, info = self.eval_env.step(eval_action *
-                                                                                    np.abs(self.action_space.low))
+                                unscaled_action = unscale_action(self.action_space, eval_action)
+                                eval_obs, eval_r, eval_done, _ = self.eval_env.step(unscaled_action)
                                 if self.render_eval:
                                     self.eval_env.render()
                                 eval_episode_reward += eval_r
@@ -970,6 +1007,11 @@ class DDPG(OffPolicyRLModel):
                                     eval_episode_reward = 0.
 
                     mpi_size = MPI.COMM_WORLD.Get_size()
+
+                    # Not enough samples in the replay buffer
+                    if not self.replay_buffer.can_sample(self.batch_size):
+                        continue
+
                     # Log stats.
                     # XXX shouldn't call np.mean on variable length lists
                     duration = time.time() - start_time
@@ -1045,7 +1087,7 @@ class DDPG(OffPolicyRLModel):
         observation = observation.reshape((-1,) + self.observation_space.shape)
         actions, _, = self._policy(observation, apply_noise=not deterministic, compute_q=False)
         actions = actions.reshape((-1,) + self.action_space.shape)  # reshape to the correct action shape
-        actions = actions * np.abs(self.action_space.low)  # scale the output for the prediction
+        actions = unscale_action(self.action_space, actions)  # scale the output for the prediction
 
         if not vectorized_env:
             actions = actions[0]
@@ -1068,7 +1110,7 @@ class DDPG(OffPolicyRLModel):
                 self.obs_rms_params +
                 self.ret_rms_params)
 
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         data = {
             "observation_space": self.observation_space,
             "action_space": self.action_space,
@@ -1097,6 +1139,8 @@ class DDPG(OffPolicyRLModel):
             "random_exploration": self.random_exploration,
             "policy": self.policy,
             "n_envs": self.n_envs,
+            "n_cpu_tf_sess": self.n_cpu_tf_sess,
+            "seed": self.seed,
             "_vectorize_action": self._vectorize_action,
             "policy_kwargs": self.policy_kwargs
         }
@@ -1105,11 +1149,12 @@ class DDPG(OffPolicyRLModel):
 
         self._save_to_file(save_path,
                            data=data,
-                           params=params_to_save)
+                           params=params_to_save,
+                           cloudpickle=cloudpickle)
 
     @classmethod
-    def load(cls, load_path, env=None, **kwargs):
-        data, params = cls._load_from_file(load_path)
+    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+        data, params = cls._load_from_file(load_path, custom_objects=custom_objects)
 
         if 'policy_kwargs' in kwargs and kwargs['policy_kwargs'] != data['policy_kwargs']:
             raise ValueError("The specified policy kwargs do not equal the stored policy kwargs. "

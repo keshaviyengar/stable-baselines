@@ -1,20 +1,23 @@
-from collections import deque
 import time
+from collections import deque
 
 import gym
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
 from mpi4py import MPI
 
 from stable_baselines.common import Dataset, explained_variance, fmt_row, zipsame, ActorCriticRLModel, SetVerbosity, \
     TensorboardWriter
 from stable_baselines import logger
 import stable_baselines.common.tf_util as tf_util
+from stable_baselines.common.tf_util import total_episode_reward_logger
 from stable_baselines.common.policies import ActorCriticPolicy
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.mpi_moments import mpi_moments
-from stable_baselines.trpo_mpi.utils import traj_segment_generator, add_vtarg_and_adv, flatten_lists
-from stable_baselines.a2c.utils import total_episode_reward_logger
+from stable_baselines.common.misc_util import flatten_lists
+from stable_baselines.common.runners import traj_segment_generator
+from stable_baselines.trpo_mpi.utils import add_vtarg_and_adv
+
 
 
 class PPO1(ActorCriticRLModel):
@@ -41,15 +44,20 @@ class PPO1(ActorCriticRLModel):
     :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
     :param full_tensorboard_log: (bool) enable additional logging when using tensorboard
         WARNING: this logging can take a lot of space quickly
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
-
     def __init__(self, policy, env, gamma=0.99, timesteps_per_actorbatch=256, clip_param=0.2, entcoeff=0.01,
                  optim_epochs=4, optim_stepsize=1e-3, optim_batchsize=64, lam=0.95, adam_epsilon=1e-5,
-                 schedule='linear', verbose=0, tensorboard_log=None,
-                 _init_setup_model=True, policy_kwargs=None, full_tensorboard_log=False):
+                 schedule='linear', verbose=0, tensorboard_log=None, _init_setup_model=True,
+                 policy_kwargs=None, full_tensorboard_log=False, seed=None, n_cpu_tf_sess=1):
 
         super().__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False,
-                         _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs)
+                         _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs,
+                         seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         self.gamma = gamma
         self.timesteps_per_actorbatch = timesteps_per_actorbatch
@@ -77,7 +85,6 @@ class PPO1(ActorCriticRLModel):
         self.proba_step = None
         self.initial_state = None
         self.summary = None
-        self.episode_reward = None
 
         if _init_setup_model:
             self.setup_model()
@@ -94,7 +101,8 @@ class PPO1(ActorCriticRLModel):
 
             self.graph = tf.Graph()
             with self.graph.as_default():
-                self.sess = tf_util.single_threaded_session(graph=self.graph)
+                self.set_random_seed(self.seed)
+                self.sess = tf_util.make_session(num_cpu=self.n_cpu_tf_sess, graph=self.graph)
 
                 # Construct network for new policy
                 self.policy_pi = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
@@ -187,23 +195,26 @@ class PPO1(ActorCriticRLModel):
                 self.compute_losses = tf_util.function([obs_ph, old_pi.obs_ph, action_ph, atarg, ret, lrmult],
                                                        losses)
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="PPO1",
+    def learn(self, total_timesteps, callback=None, log_interval=100, tb_log_name="PPO1",
               reset_num_timesteps=True):
 
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
+        callback = self._init_callback(callback)
 
         with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name, new_tb_log) \
                 as writer:
-            self._setup_learn(seed)
+            self._setup_learn()
 
             assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the PPO1 model must be " \
                                                                "an instance of common.policies.ActorCriticPolicy."
 
             with self.sess.as_default():
                 self.adam.sync()
+                callback.on_training_start(locals(), globals())
 
                 # Prepare for rollouts
-                seg_gen = traj_segment_generator(self.policy_pi, self.env, self.timesteps_per_actorbatch)
+                seg_gen = traj_segment_generator(self.policy_pi, self.env, self.timesteps_per_actorbatch,
+                                                 callback=callback)
 
                 episodes_so_far = 0
                 timesteps_so_far = 0
@@ -211,19 +222,12 @@ class PPO1(ActorCriticRLModel):
                 t_start = time.time()
 
                 # rolling buffer for episode lengths
-                lenbuffer = deque(maxlen=100)
+                len_buffer = deque(maxlen=100)
                 # rolling buffer for episode rewards
-                rewbuffer = deque(maxlen=100)
-
-                self.episode_reward = np.zeros((self.n_envs,))
+                reward_buffer = deque(maxlen=100)
 
                 while True:
-                    if callback is not None:
-                        # Only stop training if return value is False, not when it is None. This is for backwards
-                        # compatibility with callbacks that have no return statement.
-                        if callback(locals(), globals()) is False:
-                            break
-                    if total_timesteps and timesteps_so_far >= total_timesteps:
+                    if timesteps_so_far >= total_timesteps:
                         break
 
                     if self.schedule == 'constant':
@@ -236,6 +240,11 @@ class PPO1(ActorCriticRLModel):
                     logger.log("********** Iteration %i ************" % iters_so_far)
 
                     seg = seg_gen.__next__()
+
+                    # Stop training early (triggered by the callback)
+                    if not seg.get('continue_training', True):  # pytype: disable=attribute-error
+                        break
+
                     add_vtarg_and_adv(seg, self.gamma, self.lam)
 
                     # ob, ac, atarg, ret, td1ret = map(np.concatenate, (obs, acs, atargs, rets, td1rets))
@@ -244,10 +253,10 @@ class PPO1(ActorCriticRLModel):
 
                     # true_rew is the reward without discount
                     if writer is not None:
-                        self.episode_reward = total_episode_reward_logger(self.episode_reward,
-                                                                          seg["true_rewards"].reshape((self.n_envs, -1)),
-                                                                          seg["dones"].reshape((self.n_envs, -1)),
-                                                                          writer, self.num_timesteps)
+                        total_episode_reward_logger(self.episode_reward,
+                                                    seg["true_rewards"].reshape((self.n_envs, -1)),
+                                                    seg["dones"].reshape((self.n_envs, -1)),
+                                                    writer, self.num_timesteps)
 
                     # predicted value function before udpate
                     vpredbefore = seg["vpred"]
@@ -315,11 +324,11 @@ class PPO1(ActorCriticRLModel):
                     # list of tuples
                     listoflrpairs = MPI.COMM_WORLD.allgather(lrlocal)
                     lens, rews = map(flatten_lists, zip(*listoflrpairs))
-                    lenbuffer.extend(lens)
-                    rewbuffer.extend(rews)
-                    if len(lenbuffer) > 0:
-                        logger.record_tabular("EpLenMean", np.mean(lenbuffer))
-                        logger.record_tabular("EpRewMean", np.mean(rewbuffer))
+                    len_buffer.extend(lens)
+                    reward_buffer.extend(rews)
+                    if len(len_buffer) > 0:
+                        logger.record_tabular("EpLenMean", np.mean(len_buffer))
+                        logger.record_tabular("EpRewMean", np.mean(reward_buffer))
                     logger.record_tabular("EpThisIter", len(lens))
                     episodes_so_far += len(lens)
                     current_it_timesteps = MPI.COMM_WORLD.allreduce(seg["total_timestep"])
@@ -331,10 +340,10 @@ class PPO1(ActorCriticRLModel):
                     logger.record_tabular("TimeElapsed", time.time() - t_start)
                     if self.verbose >= 1 and MPI.COMM_WORLD.Get_rank() == 0:
                         logger.dump_tabular()
-
+        callback.on_training_end()
         return self
 
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         data = {
             "gamma": self.gamma,
             "timesteps_per_actorbatch": self.timesteps_per_actorbatch,
@@ -351,10 +360,12 @@ class PPO1(ActorCriticRLModel):
             "observation_space": self.observation_space,
             "action_space": self.action_space,
             "n_envs": self.n_envs,
+            "n_cpu_tf_sess": self.n_cpu_tf_sess,
+            "seed": self.seed,
             "_vectorize_action": self._vectorize_action,
             "policy_kwargs": self.policy_kwargs
         }
 
         params_to_save = self.get_parameters()
 
-        self._save_to_file(save_path, data=data, params=params_to_save)
+        self._save_to_file(save_path, data=data, params=params_to_save, cloudpickle=cloudpickle)

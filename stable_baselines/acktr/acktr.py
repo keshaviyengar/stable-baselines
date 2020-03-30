@@ -1,22 +1,19 @@
-"""
-Discrete acktr
-"""
-
 import time
-from collections import deque
+import warnings
 
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
 from gym.spaces import Box, Discrete
 
 from stable_baselines import logger
-from stable_baselines.common import explained_variance, ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.a2c.a2c import A2CRunner
-from stable_baselines.a2c.utils import Scheduler, calc_entropy, mse, \
-    total_episode_reward_logger
+from stable_baselines.ppo2.ppo2 import Runner as PPO2Runner
+from stable_baselines.common.tf_util import mse, total_episode_reward_logger
 from stable_baselines.acktr import kfac
+from stable_baselines.common.schedules import Scheduler
+from stable_baselines.common import explained_variance, ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.common.policies import ActorCriticPolicy, RecurrentActorCriticPolicy
-from stable_baselines.ppo2.ppo2 import safe_mean
+from stable_baselines.common.math_util import safe_mean
 
 
 class ACKTR(ActorCriticRLModel):
@@ -27,8 +24,12 @@ class ACKTR(ActorCriticRLModel):
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) Discount factor
     :param nprocs: (int) The number of threads for TensorFlow operations
+
+        .. deprecated:: 2.9.0
+            Use `n_cpu_tf_sess` instead.
+
     :param n_steps: (int) The number of steps to run for each environment
-    :param ent_coef: (float) The weight for the entropic loss
+    :param ent_coef: (float) The weight for the entropy loss
     :param vf_coef: (float) The weight for the loss on the value function
     :param vf_fisher_coef: (float) The weight for the fisher loss on the value function
     :param learning_rate: (float) The initial learning rate for the RMS prop optimizer
@@ -40,18 +41,28 @@ class ACKTR(ActorCriticRLModel):
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     :param async_eigen_decomp: (bool) Use async eigen decomposition
+    :param kfac_update: (int) update kfac after kfac_update steps
     :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
+    :param gae_lambda: (float) Factor for trade-off of bias vs variance for Generalized Advantage Estimator
+        If None (default), then the classic advantage will be used instead of GAE
     :param full_tensorboard_log: (bool) enable additional logging when using tensorboard
         WARNING: this logging can take a lot of space quickly
+    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
+        If None (default), use random seed. Note that if you want completely deterministic
+        results, you must set `n_cpu_tf_sess` to 1.
+    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
+        If None, the number of cpu of the current machine will be used.
     """
 
-    def __init__(self, policy, env, gamma=0.99, nprocs=1, n_steps=20, ent_coef=0.01, vf_coef=0.25, vf_fisher_coef=1.0,
+    def __init__(self, policy, env, gamma=0.99, nprocs=None, n_steps=20, ent_coef=0.01, vf_coef=0.25, vf_fisher_coef=1.0,
                  learning_rate=0.25, max_grad_norm=0.5, kfac_clip=0.001, lr_schedule='linear', verbose=0,
-                 tensorboard_log=None, _init_setup_model=True, async_eigen_decomp=False,
-                 policy_kwargs=None, full_tensorboard_log=False):
+                 tensorboard_log=None, _init_setup_model=True, async_eigen_decomp=False, kfac_update=1,
+                 gae_lambda=None, policy_kwargs=None, full_tensorboard_log=False, seed=None, n_cpu_tf_sess=1):
 
-        super(ACKTR, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True,
-                                    _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs)
+        if nprocs is not None:
+            warnings.warn("nprocs will be removed in a future version (v3.x.x) "
+                          "use n_cpu_tf_sess instead", DeprecationWarning)
+            n_cpu_tf_sess = nprocs
 
         self.n_steps = n_steps
         self.gamma = gamma
@@ -62,51 +73,58 @@ class ACKTR(ActorCriticRLModel):
         self.max_grad_norm = max_grad_norm
         self.learning_rate = learning_rate
         self.lr_schedule = lr_schedule
-        self.nprocs = nprocs
+
         self.tensorboard_log = tensorboard_log
         self.async_eigen_decomp = async_eigen_decomp
         self.full_tensorboard_log = full_tensorboard_log
+        self.kfac_update = kfac_update
+        self.gae_lambda = gae_lambda
 
-        self.graph = None
-        self.sess = None
-        self.action_ph = None
+        self.actions_ph = None
         self.advs_ph = None
         self.rewards_ph = None
-        self.pg_lr_ph = None
-        self.model = None
-        self.model2 = None
-        self.logits = None
+        self.learning_rate_ph = None
+        self.step_model = None
+        self.train_model = None
         self.entropy = None
         self.pg_loss = None
         self.vf_loss = None
         self.pg_fisher = None
         self.vf_fisher = None
         self.joint_fisher = None
-        self.params = None
         self.grads_check = None
         self.optim = None
         self.train_op = None
         self.q_runner = None
         self.learning_rate_schedule = None
-        self.train_model = None
-        self.step_model = None
-        self.step = None
         self.proba_step = None
         self.value = None
         self.initial_state = None
         self.n_batch = None
         self.summary = None
-        self.episode_reward = None
         self.trained = False
+        self.continuous_actions = False
+
+        super(ACKTR, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True,
+                                    _init_setup_model=_init_setup_model, policy_kwargs=policy_kwargs,
+                                    seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
 
         if _init_setup_model:
             self.setup_model()
 
+    def _make_runner(self):
+        if self.gae_lambda is not None:
+            return PPO2Runner(
+                env=self.env, model=self, n_steps=self.n_steps, gamma=self.gamma, lam=self.gae_lambda)
+        else:
+            return A2CRunner(
+                self.env, self, n_steps=self.n_steps, gamma=self.gamma)
+
     def _get_pretrain_placeholders(self):
         policy = self.train_model
         if isinstance(self.action_space, Discrete):
-            return policy.obs_ph, self.action_ph, policy.policy
-        raise NotImplementedError("WIP: ACKTR does not support Continuous actions yet.")
+            return policy.obs_ph, self.actions_ph, policy.policy
+        return policy.obs_ph, self.actions_ph, policy.deterministic_action
 
     def setup_model(self):
         with SetVerbosity(self.verbose):
@@ -114,12 +132,13 @@ class ACKTR(ActorCriticRLModel):
             assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the ACKTR model must be " \
                                                                "an instance of common.policies.ActorCriticPolicy."
 
-            if isinstance(self.action_space, Box):
-                raise NotImplementedError("WIP: ACKTR does not support Continuous actions yet.")
+            # Enable continuous actions tricks (normalized advantage)
+            self.continuous_actions = isinstance(self.action_space, Box)
 
             self.graph = tf.Graph()
             with self.graph.as_default():
-                self.sess = tf_util.make_session(num_cpu=self.nprocs, graph=self.graph)
+                self.set_random_seed(self.seed)
+                self.sess = tf_util.make_session(num_cpu=self.n_cpu_tf_sess, graph=self.graph)
 
                 n_batch_step = None
                 n_batch_train = None
@@ -127,35 +146,34 @@ class ACKTR(ActorCriticRLModel):
                     n_batch_step = self.n_envs
                     n_batch_train = self.n_envs * self.n_steps
 
-                self.model = step_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs,
-                                                      1, n_batch_step, reuse=False, **self.policy_kwargs)
+                step_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs,
+                                         1, n_batch_step, reuse=False, **self.policy_kwargs)
 
                 self.params = params = tf_util.get_trainable_vars("model")
 
                 with tf.variable_scope("train_model", reuse=True,
                                        custom_getter=tf_util.outer_scope_getter("train_model")):
-                    self.model2 = train_model = self.policy(self.sess, self.observation_space, self.action_space,
-                                                            self.n_envs, self.n_steps, n_batch_train,
-                                                            reuse=True, **self.policy_kwargs)
+                    train_model = self.policy(self.sess, self.observation_space, self.action_space,
+                                              self.n_envs, self.n_steps, n_batch_train,
+                                              reuse=True, **self.policy_kwargs)
 
                 with tf.variable_scope("loss", reuse=False, custom_getter=tf_util.outer_scope_getter("loss")):
                     self.advs_ph = advs_ph = tf.placeholder(tf.float32, [None])
                     self.rewards_ph = rewards_ph = tf.placeholder(tf.float32, [None])
-                    self.pg_lr_ph = pg_lr_ph = tf.placeholder(tf.float32, [])
-                    self.action_ph = action_ph = train_model.pdtype.sample_placeholder([None])
+                    self.learning_rate_ph = learning_rate_ph = tf.placeholder(tf.float32, [])
+                    self.actions_ph = train_model.pdtype.sample_placeholder([None])
 
-                    logpac = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.policy, labels=action_ph)
-                    self.logits = train_model.policy
+                    neg_log_prob = train_model.proba_distribution.neglogp(self.actions_ph)
 
                     # training loss
-                    pg_loss = tf.reduce_mean(advs_ph * logpac)
-                    self.entropy = entropy = tf.reduce_mean(calc_entropy(train_model.policy))
+                    pg_loss = tf.reduce_mean(advs_ph * neg_log_prob)
+                    self.entropy = entropy = tf.reduce_mean(train_model.proba_distribution.entropy())
                     self.pg_loss = pg_loss = pg_loss - self.ent_coef * entropy
                     self.vf_loss = vf_loss = mse(tf.squeeze(train_model.value_fn), rewards_ph)
                     train_loss = pg_loss + self.vf_coef * vf_loss
 
                     # Fisher loss construction
-                    self.pg_fisher = pg_fisher_loss = -tf.reduce_mean(logpac)
+                    self.pg_fisher = pg_fisher_loss = -tf.reduce_mean(neg_log_prob)
                     sample_net = train_model.value_fn + tf.random_normal(tf.shape(train_model.value_fn))
                     self.vf_fisher = vf_fisher_loss = - self.vf_fisher_coef * tf.reduce_mean(
                         tf.pow(train_model.value_fn - tf.stop_gradient(sample_net), 2))
@@ -172,12 +190,12 @@ class ACKTR(ActorCriticRLModel):
 
                 with tf.variable_scope("input_info", reuse=False):
                     tf.summary.scalar('discounted_rewards', tf.reduce_mean(self.rewards_ph))
-                    tf.summary.scalar('learning_rate', tf.reduce_mean(self.pg_lr_ph))
+                    tf.summary.scalar('learning_rate', tf.reduce_mean(self.learning_rate_ph))
                     tf.summary.scalar('advantage', tf.reduce_mean(self.advs_ph))
 
                     if self.full_tensorboard_log:
                         tf.summary.histogram('discounted_rewards', self.rewards_ph)
-                        tf.summary.histogram('learning_rate', self.pg_lr_ph)
+                        tf.summary.histogram('learning_rate', self.learning_rate_ph)
                         tf.summary.histogram('advantage', self.advs_ph)
                         if tf_util.is_image(self.observation_space):
                             tf.summary.image('observation', train_model.obs_ph)
@@ -186,8 +204,8 @@ class ACKTR(ActorCriticRLModel):
 
                 with tf.variable_scope("kfac", reuse=False, custom_getter=tf_util.outer_scope_getter("kfac")):
                     with tf.device('/gpu:0'):
-                        self.optim = optim = kfac.KfacOptimizer(learning_rate=pg_lr_ph, clip_kl=self.kfac_clip,
-                                                                momentum=0.9, kfac_update=1,
+                        self.optim = optim = kfac.KfacOptimizer(learning_rate=learning_rate_ph, clip_kl=self.kfac_clip,
+                                                                momentum=0.9, kfac_update=self.kfac_update,
                                                                 epsilon=0.01, stats_decay=0.99,
                                                                 async_eigen_decomp=self.async_eigen_decomp,
                                                                 cold_iter=10,
@@ -220,13 +238,28 @@ class ACKTR(ActorCriticRLModel):
         :return: (float, float, float) policy loss, value loss, policy entropy
         """
         advs = rewards - values
-        cur_lr = None
-        for _ in range(len(obs)):
-            cur_lr = self.learning_rate_schedule.value()
-        assert cur_lr is not None, "Error: the observation input array cannon be empty"
+        # Normalize advantage (used in the original continuous version)
+        if self.continuous_actions:
+            advs = (advs - advs.mean()) / (advs.std() + 1e-8)
 
-        td_map = {self.train_model.obs_ph: obs, self.action_ph: actions, self.advs_ph: advs, self.rewards_ph: rewards,
-                  self.pg_lr_ph: cur_lr}
+        current_lr = None
+
+        assert len(obs) > 0, "Error: the observation input array cannot be empty"
+
+        # Note: in the original continuous version,
+        # the stepsize was automatically tuned computing the kl div
+        # and comparing it to the desired one
+        for _ in range(len(obs)):
+            current_lr = self.learning_rate_schedule.value()
+
+        td_map = {
+            self.train_model.obs_ph: obs,
+            self.actions_ph: actions,
+            self.advs_ph: advs,
+            self.rewards_ph: rewards,
+            self.learning_rate_ph: current_lr
+        }
+
         if states is not None:
             td_map[self.train_model.states_ph] = states
             td_map[self.train_model.dones_ph] = masks
@@ -250,14 +283,15 @@ class ACKTR(ActorCriticRLModel):
 
         return policy_loss, value_loss, policy_entropy
 
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="ACKTR",
+    def learn(self, total_timesteps, callback=None, log_interval=100, tb_log_name="ACKTR",
               reset_num_timesteps=True):
 
         new_tb_log = self._init_num_timesteps(reset_num_timesteps)
+        callback = self._init_callback(callback)
 
         with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name, new_tb_log) \
                 as writer:
-            self._setup_learn(seed)
+            self._setup_learn()
             self.n_batch = self.n_envs * self.n_steps
 
             self.learning_rate_schedule = Scheduler(initial_value=self.learning_rate, n_values=total_timesteps,
@@ -287,9 +321,6 @@ class ACKTR(ActorCriticRLModel):
 
             self.trained = True
 
-            runner = A2CRunner(self.env, self, n_steps=self.n_steps, gamma=self.gamma)
-            self.episode_reward = np.zeros((self.n_envs,))
-
             t_start = time.time()
             coord = tf.train.Coordinator()
             if self.q_runner is not None:
@@ -297,33 +328,45 @@ class ACKTR(ActorCriticRLModel):
             else:
                 enqueue_threads = []
 
-            # Training stats (when using Monitor wrapper)
-            ep_info_buf = deque(maxlen=100)
+            callback.on_training_start(locals(), globals())
 
             for update in range(1, total_timesteps // self.n_batch + 1):
+
+                callback.on_rollout_start()
+
+                # pytype:disable=bad-unpacking
                 # true_reward is the reward without discount
-                obs, states, rewards, masks, actions, values, ep_infos, true_reward = runner.run()
-                ep_info_buf.extend(ep_infos)
-                policy_loss, value_loss, policy_entropy = self._train_step(obs, states, rewards, masks, actions, values,
+                if isinstance(self.runner, PPO2Runner):
+                    # We are using GAE
+                    rollout = self.runner.run(callback)
+                    obs, returns, masks, actions, values, _, states, ep_infos, true_reward = rollout
+                else:
+                    rollout = self.runner.run(callback)
+                    obs, states, returns, masks, actions, values, ep_infos, true_reward = rollout
+                # pytype:enable=bad-unpacking
+
+                callback.on_rollout_end()
+
+                # Early stopping due to the callback
+                if not self.runner.continue_training:
+                    break
+
+                self.ep_info_buf.extend(ep_infos)
+                policy_loss, value_loss, policy_entropy = self._train_step(obs, states, returns, masks, actions, values,
                                                                            self.num_timesteps // (self.n_batch + 1),
                                                                            writer)
                 n_seconds = time.time() - t_start
                 fps = int((update * self.n_batch) / n_seconds)
 
                 if writer is not None:
-                    self.episode_reward = total_episode_reward_logger(self.episode_reward,
-                                                                      true_reward.reshape((self.n_envs, self.n_steps)),
-                                                                      masks.reshape((self.n_envs, self.n_steps)),
-                                                                      writer, self.num_timesteps)
+                    total_episode_reward_logger(self.episode_reward,
+                                                true_reward.reshape((self.n_envs, self.n_steps)),
+                                                masks.reshape((self.n_envs, self.n_steps)),
+                                                writer, self.num_timesteps)
 
-                if callback is not None:
-                    # Only stop training if return value is False, not when it is None. This is for backwards
-                    # compatibility with callbacks that have no return statement.
-                    if callback(locals(), globals()) is False:
-                        break
 
                 if self.verbose >= 1 and (update % log_interval == 0 or update == 1):
-                    explained_var = explained_variance(values, rewards)
+                    explained_var = explained_variance(values, returns)
                     logger.record_tabular("nupdates", update)
                     logger.record_tabular("total_timesteps", self.num_timesteps)
                     logger.record_tabular("fps", fps)
@@ -331,22 +374,21 @@ class ACKTR(ActorCriticRLModel):
                     logger.record_tabular("policy_loss", float(policy_loss))
                     logger.record_tabular("value_loss", float(value_loss))
                     logger.record_tabular("explained_variance", float(explained_var))
-                    if len(ep_info_buf) > 0 and len(ep_info_buf[0]) > 0:
-                        logger.logkv('ep_reward_mean', safe_mean([ep_info['r'] for ep_info in ep_info_buf]))
-                        logger.logkv('ep_len_mean', safe_mean([ep_info['l'] for ep_info in ep_info_buf]))
+                    if len(self.ep_info_buf) > 0 and len(self.ep_info_buf[0]) > 0:
+                        logger.logkv('ep_reward_mean', safe_mean([ep_info['r'] for ep_info in self.ep_info_buf]))
+                        logger.logkv('ep_len_mean', safe_mean([ep_info['l'] for ep_info in self.ep_info_buf]))
                     logger.dump_tabular()
-
-                self.num_timesteps += self.n_batch + 1
 
             coord.request_stop()
             coord.join(enqueue_threads)
 
+        callback.on_training_end()
         return self
 
-    def save(self, save_path):
+    def save(self, save_path, cloudpickle=False):
         data = {
             "gamma": self.gamma,
-            "nprocs": self.nprocs,
+            "gae_lambda": self.gae_lambda,
             "n_steps": self.n_steps,
             "vf_coef": self.vf_coef,
             "ent_coef": self.ent_coef,
@@ -360,10 +402,13 @@ class ACKTR(ActorCriticRLModel):
             "observation_space": self.observation_space,
             "action_space": self.action_space,
             "n_envs": self.n_envs,
+            "n_cpu_tf_sess": self.n_cpu_tf_sess,
+            "seed": self.seed,
+            "kfac_update": self.kfac_update,
             "_vectorize_action": self._vectorize_action,
             "policy_kwargs": self.policy_kwargs
         }
 
         params_to_save = self.get_parameters()
 
-        self._save_to_file(save_path, data=data, params=params_to_save)
+        self._save_to_file(save_path, data=data, params=params_to_save, cloudpickle=cloudpickle)

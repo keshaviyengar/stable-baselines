@@ -10,7 +10,8 @@ from stable_baselines import A2C, ACER, ACKTR, PPO2, bench
 from stable_baselines.common.policies import MlpLstmPolicy, LstmPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv
 from stable_baselines.common.vec_env.vec_normalize import VecNormalize
-from stable_baselines.ppo2.ppo2 import safe_mean
+from stable_baselines.common.math_util import safe_mean
+from stable_baselines.common.evaluation import evaluate_policy
 
 
 class CustomLSTMPolicy1(LstmPolicy):
@@ -74,7 +75,7 @@ LSTM_POLICIES = [MlpLstmPolicy, CustomLSTMPolicy1, CustomLSTMPolicy2, CustomLSTM
 @pytest.mark.parametrize("model_class", MODELS)
 @pytest.mark.parametrize("policy", LSTM_POLICIES)
 def test_lstm_policy(request, model_class, policy):
-    model_fname = './test_model_{}.pkl'.format(request.node.name)
+    model_fname = './test_model_{}.zip'.format(request.node.name)
 
     try:
         # create and train
@@ -82,14 +83,10 @@ def test_lstm_policy(request, model_class, policy):
             model = model_class(policy, 'CartPole-v1', nminibatches=1)
         else:
             model = model_class(policy, 'CartPole-v1')
-        model.learn(total_timesteps=100, seed=0)
+        model.learn(total_timesteps=100)
 
         env = model.get_env()
-        # predict and measure the acc reward
-        obs = env.reset()
-        for _ in range(N_TRIALS):
-            action, _ = model.predict(obs)
-            obs, _, _, _ = env.step(action)
+        evaluate_policy(model, env, n_eval_episodes=10)
         # saving
         model.save(model_fname)
         del model, env
@@ -123,7 +120,7 @@ def test_lstm_train():
         nonlocal eprewmeans
         eprewmeans.append(safe_mean([ep_info['r'] for ep_info in local['ep_info_buf']]))
 
-    model.learn(total_timesteps=100000, seed=0, callback=reward_callback)
+    model.learn(total_timesteps=100000, callback=reward_callback)
 
     # Maximum episode reward is 500.
     # In CartPole-v1, a non-recurrent policy can easily get >= 450.
