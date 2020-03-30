@@ -1,11 +1,14 @@
+import copy
 import os
-import collections
 import functools
+import collections
 import multiprocessing
-from typing import Set
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.client import device_lib
+
+from stable_baselines import logger
 
 
 def is_image(tensor):
@@ -21,64 +24,54 @@ def is_image(tensor):
     return len(tensor.shape) == 3 and tensor.shape[-1] in [1, 3, 4]
 
 
-def batch_to_seq(tensor_batch, n_batch, n_steps, flat=False):
+def switch(condition, then_expression, else_expression):
     """
-    Transform a batch of Tensors, into a sequence of Tensors for recurrent policies
+    Switches between two operations depending on a scalar value (int or bool).
+    Note that both `then_expression` and `else_expression`
+    should be symbolic tensors of the *same shape*.
 
-    :param tensor_batch: (TensorFlow Tensor) The input tensor to unroll
-    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
-    :param n_steps: (int) The number of steps to run for each environment
-    :param flat: (bool) If the input Tensor is flat
-    :return: (TensorFlow Tensor) sequence of Tensors for recurrent policies
+    :param condition: (TensorFlow Tensor) scalar tensor.
+    :param then_expression: (TensorFlow Operation)
+    :param else_expression: (TensorFlow Operation)
+    :return: (TensorFlow Operation) the switch output
     """
-    if flat:
-        tensor_batch = tf.reshape(tensor_batch, [n_batch, n_steps])
-    else:
-        tensor_batch = tf.reshape(tensor_batch, [n_batch, n_steps, -1])
-    return [tf.squeeze(v, [1]) for v in tf.split(axis=1, num_or_size_splits=n_steps, value=tensor_batch)]
+    x_shape = copy.copy(then_expression.get_shape())
+    out_tensor = tf.cond(tf.cast(condition, 'bool'),
+                         lambda: then_expression,
+                         lambda: else_expression)
+    out_tensor.set_shape(x_shape)
+    return out_tensor
 
 
-def seq_to_batch(tensor_sequence, flat=False):
+# ================================================================
+# Extras
+# ================================================================
+
+def leaky_relu(tensor, leak=0.2):
     """
-    Transform a sequence of Tensors, into a batch of Tensors for recurrent policies
+    Leaky ReLU
+    http://web.stanford.edu/~awni/papers/relu_hybrid_icml2013_final.pdf
 
-    :param tensor_sequence: (TensorFlow Tensor) The input tensor to batch
-    :param flat: (bool) If the input Tensor is flat
-    :return: (TensorFlow Tensor) batch of Tensors for recurrent policies
+    :param tensor: (float) the input value
+    :param leak: (float) the leaking coeficient when the function is saturated
+    :return: (float) Leaky ReLU output
     """
-    shape = tensor_sequence[0].get_shape().as_list()
-    if not flat:
-        assert len(shape) > 1
-        n_hidden = tensor_sequence[0].get_shape()[-1].value
-        return tf.reshape(tf.concat(axis=1, values=tensor_sequence), [-1, n_hidden])
-    else:
-        return tf.reshape(tf.stack(values=tensor_sequence, axis=1), [-1])
+    f_1 = 0.5 * (1 + leak)
+    f_2 = 0.5 * (1 - leak)
+    return f_1 * tensor + f_2 * abs(tensor)
 
-
-def check_shape(tensors, shapes):
-    """
-    Verifies the tensors match the given shape, will raise an error if the shapes do not match
-
-    :param tensors: ([TensorFlow Tensor]) The tensors that should be checked
-    :param shapes: ([list]) The list of shapes for each tensor
-    """
-    i = 0
-    for (tensor, shape) in zip(tensors, shapes):
-        assert tensor.get_shape().as_list() == shape, "id " + str(i) + " shape " + str(tensor.get_shape()) + str(shape)
-        i += 1
 
 # ================================================================
 # Mathematical utils
 # ================================================================
-
 
 def huber_loss(tensor, delta=1.0):
     """
     Reference: https://en.wikipedia.org/wiki/Huber_loss
 
     :param tensor: (TensorFlow Tensor) the input value
-    :param delta: (float) Huber loss delta value
-    :return: (TensorFlow Tensor) Huber loss output
+    :param delta: (float) huber loss delta value
+    :return: (TensorFlow Tensor) huber loss output
     """
     return tf.where(
         tf.abs(tensor) < delta,
@@ -87,95 +80,9 @@ def huber_loss(tensor, delta=1.0):
     )
 
 
-def sample(logits):
-    """
-    Creates a sampling Tensor for non deterministic policies
-    when using categorical distribution.
-    It uses the Gumbel-max trick: http://amid.fish/humble-gumbel
-
-    :param logits: (TensorFlow Tensor) The input probability for each action
-    :return: (TensorFlow Tensor) The sampled action
-    """
-    noise = tf.random_uniform(tf.shape(logits))
-    return tf.argmax(logits - tf.log(-tf.log(noise)), 1)
-
-
-def calc_entropy(logits):
-    """
-    Calculates the entropy of the output values of the network
-
-    :param logits: (TensorFlow Tensor) The input probability for each action
-    :return: (TensorFlow Tensor) The Entropy of the output values of the network
-    """
-    # Compute softmax
-    a_0 = logits - tf.reduce_max(logits, 1, keepdims=True)
-    exp_a_0 = tf.exp(a_0)
-    z_0 = tf.reduce_sum(exp_a_0, 1, keepdims=True)
-    p_0 = exp_a_0 / z_0
-    return tf.reduce_sum(p_0 * (tf.log(z_0) - a_0), 1)
-
-
-def mse(pred, target):
-    """
-    Returns the Mean squared error between prediction and target
-
-    :param pred: (TensorFlow Tensor) The predicted value
-    :param target: (TensorFlow Tensor) The target value
-    :return: (TensorFlow Tensor) The Mean squared error between prediction and target
-    """
-    return tf.reduce_mean(tf.square(pred - target))
-
-
-def avg_norm(tensor):
-    """
-    Return an average of the L2 normalization of the batch
-
-    :param tensor: (TensorFlow Tensor) The input tensor
-    :return: (TensorFlow Tensor) Average L2 normalization of the batch
-    """
-    return tf.reduce_mean(tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1)))
-
-
-def gradient_add(grad_1, grad_2, param, verbose=0):
-    """
-    Sum two gradients
-
-    :param grad_1: (TensorFlow Tensor) The first gradient
-    :param grad_2: (TensorFlow Tensor) The second gradient
-    :param param: (TensorFlow parameters) The trainable parameters
-    :param verbose: (int) verbosity level
-    :return: (TensorFlow Tensor) the sum of the gradients
-    """
-    if verbose > 1:
-        print([grad_1, grad_2, param.name])
-    if grad_1 is None and grad_2 is None:
-        return None
-    elif grad_1 is None:
-        return grad_2
-    elif grad_2 is None:
-        return grad_1
-    else:
-        return grad_1 + grad_2
-
-
-def q_explained_variance(q_pred, q_true):
-    """
-    Calculates the explained variance of the Q value
-
-    :param q_pred: (TensorFlow Tensor) The predicted Q value
-    :param q_true: (TensorFlow Tensor) The expected Q value
-    :return: (TensorFlow Tensor) the explained variance of the Q value
-    """
-    _, var_y = tf.nn.moments(q_true, axes=[0, 1])
-    _, var_pred = tf.nn.moments(q_true - q_pred, axes=[0, 1])
-    check_shape([var_y, var_pred], [[]] * 2)
-    return 1.0 - (var_pred / var_y)
-
-
 # ================================================================
 # Global session
 # ================================================================
-
 
 def make_session(num_cpu=None, make_default=False, graph=None):
     """
@@ -213,7 +120,7 @@ def single_threaded_session(make_default=False, graph=None):
 
 def in_session(func):
     """
-    Wraps a function so that it is in a TensorFlow Session
+    wrappes a function so that it is in a TensorFlow Session
 
     :param func: (function) the function to wrap
     :return: (function)
@@ -227,7 +134,7 @@ def in_session(func):
     return newfunc
 
 
-ALREADY_INITIALIZED = set()  # type: Set[tf.Variable]
+ALREADY_INITIALIZED = set()
 
 
 def initialize(sess=None):
@@ -244,9 +151,72 @@ def initialize(sess=None):
 
 
 # ================================================================
-# Theano-like Function
+# Model components
 # ================================================================
 
+def normc_initializer(std=1.0, axis=0):
+    """
+    Return a parameter initializer for TensorFlow
+
+    :param std: (float) standard deviation
+    :param axis: (int) the axis to normalize on
+    :return: (function)
+    """
+
+    def _initializer(shape, dtype=None, partition_info=None):
+        out = np.random.randn(*shape).astype(np.float32)
+        out *= std / np.sqrt(np.square(out).sum(axis=axis, keepdims=True))
+        return tf.constant(out)
+
+    return _initializer
+
+
+def conv2d(input_tensor, num_filters, name, filter_size=(3, 3), stride=(1, 1),
+           pad="SAME", dtype=tf.float32, collections=None, summary_tag=None):
+    """
+    Creates a 2d convolutional layer for TensorFlow
+
+    :param input_tensor: (TensorFlow Tensor) The input tensor for the convolution
+    :param num_filters: (int) The number of filters
+    :param name: (str) The TensorFlow variable scope
+    :param filter_size: (tuple) The filter size
+    :param stride: (tuple) The stride of the convolution
+    :param pad: (str) The padding type ('VALID' or 'SAME')
+    :param dtype: (type) The data type for the Tensors
+    :param collections: (list) List of graph collections keys to add the Variable to
+    :param summary_tag: (str) image summary name, can be None for no image summary
+    :return: (TensorFlow Tensor) 2d convolutional layer
+    """
+    with tf.variable_scope(name):
+        stride_shape = [1, stride[0], stride[1], 1]
+        filter_shape = [filter_size[0], filter_size[1], int(input_tensor.get_shape()[3]), num_filters]
+
+        # there are "num input feature maps * filter height * filter width"
+        # inputs to each hidden unit
+        fan_in = intprod(filter_shape[:3])
+        # each unit in the lower layer receives a gradient from:
+        # "num output feature maps * filter height * filter width" /
+        #   pooling size
+        fan_out = intprod(filter_shape[:2]) * num_filters
+        # initialize weights with random weights
+        w_bound = np.sqrt(6. / (fan_in + fan_out))
+
+        weight = tf.get_variable("W", filter_shape, dtype, tf.random_uniform_initializer(-w_bound, w_bound),
+                                 collections=collections)
+        bias = tf.get_variable("b", [1, 1, 1, num_filters], initializer=tf.zeros_initializer(),
+                               collections=collections)
+
+        if summary_tag is not None:
+            tf.summary.image(summary_tag,
+                             tf.transpose(tf.reshape(weight, [filter_size[0], filter_size[1], -1, 1]), [2, 0, 1, 3]),
+                             max_outputs=10)
+
+        return tf.nn.conv2d(input_tensor, weight, stride_shape, pad) + bias
+
+
+# ================================================================
+# Theano-like Function
+# ================================================================
 
 def function(inputs, outputs, updates=None, givens=None):
     """
@@ -335,7 +305,6 @@ class _Function(object):
 # Flat vectors
 # ================================================================
 
-
 def var_shape(tensor):
     """
     get TensorFlow Tensor shape
@@ -376,7 +345,7 @@ def flatgrad(loss, var_list, clip_norm=None):
     :param loss: (float) the loss value
     :param var_list: ([TensorFlow Tensor]) the variables
     :param clip_norm: (float) clip the gradients (disabled if None)
-    :return: ([TensorFlow Tensor]) flattened gradient
+    :return: ([TensorFlow Tensor]) flattend gradient
     """
     grads = tf.gradients(loss, var_list)
     if clip_norm is not None:
@@ -434,10 +403,90 @@ class GetFlat(object):
             return self.sess.run(self.operation)
 
 
+def flattenallbut0(tensor):
+    """
+    flatten all the dimension, except from the first one
+
+    :param tensor: (TensorFlow Tensor) the input tensor
+    :return: (TensorFlow Tensor) the flattened tensor
+    """
+    return tf.reshape(tensor, [-1, intprod(tensor.get_shape().as_list()[1:])])
+
+
+# ================================================================
+# Diagnostics
+# ================================================================
+
+def display_var_info(_vars):
+    """
+    log variable information, for debug purposes
+
+    :param _vars: ([TensorFlow Tensor]) the variables
+    """
+    count_params = 0
+    for _var in _vars:
+        name = _var.name
+        if "/Adam" in name or "beta1_power" in name or "beta2_power" in name:
+            continue
+        v_params = np.prod(_var.shape.as_list())
+        count_params += v_params
+        if "/b:" in name or "/biases" in name:
+            continue  # Wx+b, bias is not interesting to look at => count params, but not print
+        logger.info("   %s%s %i params %s" % (name, " " * (55 - len(name)), v_params, str(_var.shape)))
+
+    logger.info("Total model parameters: %0.2f million" % (count_params * 1e-6))
+
+
+# ================================================================
+# Saving variables
+# ================================================================
+
+def load_state(fname, sess=None, var_list=None):
+    """
+    Load a TensorFlow saved model
+
+    :param fname: (str) the graph name
+    :param sess: (TensorFlow Session) the session, if None: get_default_session()
+    :param var_list: ([TensorFlow Tensor] or dict(str: TensorFlow Tensor)) A list of Variable/SaveableObject,
+        or a dictionary mapping names to SaveableObject`s. If ``None``, defaults to the list of all saveable objects.
+    """
+    if sess is None:
+        sess = tf.get_default_session()
+
+    # avoir crashing when loading the direct name without explicitly adding the root folder
+    if os.path.dirname(fname) == '':
+        fname = os.path.join('./', fname)
+
+    saver = tf.train.Saver(var_list=var_list)
+    saver.restore(sess, fname)
+
+
+def save_state(fname, sess=None, var_list=None):
+    """
+    Save a TensorFlow model
+
+    :param fname: (str) the graph name
+    :param sess: (TensorFlow Session) The tf session, if None, get_default_session()
+    :param var_list: ([TensorFlow Tensor] or dict(str: TensorFlow Tensor)) A list of Variable/SaveableObject,
+        or a dictionary mapping names to SaveableObject`s. If ``None``, defaults to the list of all saveable objects.
+    """
+    if sess is None:
+        sess = tf.get_default_session()
+
+    dir_name = os.path.dirname(fname)
+    # avoir crashing when saving the direct name without explicitly adding the root folder
+    if dir_name == '':
+        dir_name = './'
+        fname = os.path.join(dir_name, fname)
+    os.makedirs(dir_name, exist_ok=True)
+
+    saver = tf.train.Saver(var_list=var_list)
+    saver.save(sess, fname)
+
+
 # ================================================================
 # retrieving variables
 # ================================================================
-
 
 def get_trainable_vars(name):
     """
@@ -472,39 +521,3 @@ def outer_scope_getter(scope, new_scope=""):
         val = getter(name, *args, **kwargs)
         return val
     return _getter
-
-
-# ================================================================
-# Logging
-# ================================================================
-
-
-def total_episode_reward_logger(rew_acc, rewards, masks, writer, steps):
-    """
-    calculates the cumulated episode reward, and prints to tensorflow log the output
-
-    :param rew_acc: (np.array float) the total running reward
-    :param rewards: (np.array float) the rewards
-    :param masks: (np.array bool) the end of episodes
-    :param writer: (TensorFlow Session.writer) the writer to log to
-    :param steps: (int) the current timestep
-    :return: (np.array float) the updated total running reward
-    :return: (np.array float) the updated total running reward
-    """
-    with tf.variable_scope("environment_info", reuse=True):
-        for env_idx in range(rewards.shape[0]):
-            dones_idx = np.sort(np.argwhere(masks[env_idx]))
-
-            if len(dones_idx) == 0:
-                rew_acc[env_idx] += sum(rewards[env_idx])
-            else:
-                rew_acc[env_idx] += sum(rewards[env_idx, :dones_idx[0, 0]])
-                summary = tf.Summary(value=[tf.Summary.Value(tag="episode_reward", simple_value=rew_acc[env_idx])])
-                writer.add_summary(summary, steps + dones_idx[0, 0])
-                for k in range(1, len(dones_idx[:, 0])):
-                    rew_acc[env_idx] = sum(rewards[env_idx, dones_idx[k-1, 0]:dones_idx[k, 0]])
-                    summary = tf.Summary(value=[tf.Summary.Value(tag="episode_reward", simple_value=rew_acc[env_idx])])
-                    writer.add_summary(summary, steps + dones_idx[k, 0])
-                rew_acc[env_idx] = sum(rewards[env_idx, dones_idx[-1, 0]:])
-
-    return rew_acc

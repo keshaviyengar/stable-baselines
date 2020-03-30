@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--dueling', type=int, default=1)
     parser.add_argument('--prioritized-replay-alpha', type=float, default=0.6)
     parser.add_argument('--num-timesteps', type=int, default=int(10e6))
+    parser.add_argument('--checkpoint-freq', type=int, default=10000)
+    parser.add_argument('--checkpoint-path', type=str, default=None)
 
     args = parser.parse_args()
     logger.configure()
@@ -40,6 +42,8 @@ def main():
         gamma=0.99,
         prioritized_replay=bool(args.prioritized),
         prioritized_replay_alpha=args.prioritized_replay_alpha,
+        checkpoint_freq=args.checkpoint_freq,
+        checkpoint_path=args.checkpoint_path,
     )
     model.learn(total_timesteps=args.num_timesteps)
 

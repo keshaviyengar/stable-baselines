@@ -3,7 +3,7 @@ import numpy as np
 from gym.spaces import Box
 
 from stable_baselines.common.policies import BasePolicy, nature_cnn, register_policy
-from stable_baselines.common.tf_layers import mlp
+from stable_baselines.sac.policies import mlp
 
 
 class TD3Policy(BasePolicy):
@@ -23,6 +23,7 @@ class TD3Policy(BasePolicy):
     def __init__(self, sess, ob_space, ac_space, n_env=1, n_steps=1, n_batch=None, reuse=False, scale=False):
         super(TD3Policy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse, scale=scale)
         assert isinstance(ac_space, Box), "Error: the action space must be of type gym.spaces.Box"
+        assert (np.abs(ac_space.low) == ac_space.high).all(), "Error: the action space low and high must be symmetric"
 
         self.qf1 = None
         self.qf2 = None
@@ -33,7 +34,7 @@ class TD3Policy(BasePolicy):
         Creates an actor object
 
         :param obs: (TensorFlow Tensor) The observation placeholder (can be None for default placeholder)
-        :param reuse: (bool) whether or not to reuse parameters
+        :param reuse: (bool) whether or not to resue parameters
         :param scope: (str) the scope name of the actor
         :return: (TensorFlow Tensor) the output tensor
         """
@@ -46,7 +47,7 @@ class TD3Policy(BasePolicy):
 
         :param obs: (TensorFlow Tensor) The observation placeholder (can be None for default placeholder)
         :param action: (TensorFlow Tensor) The action placeholder
-        :param reuse: (bool) whether or not to reuse parameters
+        :param reuse: (bool) whether or not to resue parameters
         :param scope: (str) the scope name
         :return: ([tf.Tensor]) Mean, action and log probability
         """

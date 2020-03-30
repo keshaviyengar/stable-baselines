@@ -8,9 +8,7 @@ from stable_baselines import A2C, ACER, ACKTR, GAIL, DDPG, DQN, PPO1, PPO2,\
  TD3, TRPO, SAC
 from stable_baselines.common.cmd_util import make_atari_env
 from stable_baselines.common.vec_env import VecFrameStack
-from stable_baselines.common.evaluation import evaluate_policy
 from stable_baselines.gail import ExpertDataset, generate_expert_traj
-
 
 EXPERT_PATH_PENDULUM = "stable_baselines/gail/dataset/expert_pendulum.npz"
 EXPERT_PATH_DISCRETE = "stable_baselines/gail/dataset/expert_cartpole.npz"
@@ -38,7 +36,13 @@ def test_gail(expert_env):
     model = model.load("GAIL-{}".format(env_id), env=env)
     model.learn(1000)
 
-    evaluate_policy(model, env, n_eval_episodes=5)
+    obs = env.reset()
+
+    for _ in range(1000):
+        action, _ = model.predict(obs)
+        obs, _, done, _ = env.step(action)
+        if done:
+            obs = env.reset()
     del dataset, model
 
 @pytest.mark.parametrize("generate_env", [
@@ -68,7 +72,7 @@ def test_generate(generate_env):
         if key != 'episode_returns':
             assert val.shape[0] == n_timesteps, "inconsistent number of timesteps at '{}'".format(key)
 
-    dataset_loaded = np.load('expert.npz', allow_pickle=True)
+    dataset_loaded = np.load('expert.npz')
     assert dataset.keys() == dataset_loaded.keys()
     for key in dataset.keys():
         assert (dataset[key] == dataset_loaded[key]).all(), "different data at '{}'".format(key)
@@ -102,7 +106,7 @@ def test_pretrain_images():
     del dataset, model, env
 
 
-@pytest.mark.parametrize("model_class", [A2C, ACKTR, GAIL, DDPG, PPO1, PPO2, SAC, TD3, TRPO])
+@pytest.mark.parametrize("model_class", [A2C, GAIL, DDPG, PPO1, PPO2, SAC, TD3, TRPO])
 def test_behavior_cloning_box(model_class):
     """
     Behavior cloning with continuous actions.

@@ -57,17 +57,17 @@ from stable_baselines import PPO2
 
 In general, we recommend using pycharm to format everything in an efficient way.
 
-Please document each function/method and [type](https://google.github.io/pytype/user_guide.html) them using the following template:
+Please documentation each function/method using the following template:
 
 ```python
 
-def my_function(arg1: type1, arg2: type2) -> returntype:
+def my_function(arg1, arg2):
     """
     Short description of the function.
 
-    :param arg1: (type1) describe what is arg1
-    :param arg2: (type2) describe what is arg2
-    :return: (returntype) describe what is returned
+    :param arg1: (arg1 type) describe what is arg1
+    :param arg2: (arg2 type) describe what is arg2
+    :return: (return type) describe what is returned
     """
     ...
     return my_variable
@@ -77,7 +77,7 @@ def my_function(arg1: type1, arg2: type2) -> returntype:
 
 Before proposing a PR, please open an issue, where the feature will be discussed. This prevent from duplicated PR to be proposed and also ease the code review process.
 
-Each PR need to be reviewed and accepted by at least one of the maintainers (@hill-a, @araffin, @erniejunior, @AdamGleave or @Miffyli).
+Each PR need to be reviewed and accepted by at least one of the maintainers (@hill-a , @araffin or @erniejunior ).
 A PR must pass the Continuous Integration tests (travis + codacy) to be merged with the master branch.
 
 Note: in rare cases, we can create exception for codacy failure.
@@ -88,34 +88,15 @@ All new features must add tests in the `tests/` folder ensuring that everything 
 We use [pytest](https://pytest.org/).
 Also, when a bug fix is proposed, tests should be added to avoid regression.
 
-To run tests with `pytest`:
+To run tests:
 
 ```
-make pytest
+./run_tests.sh
 ```
-
-Type checking with `pytype`:
-
-```
-make type
-```
-
-Build the documentation:
-
-```
-make doc
-```
-
-Check documentation spelling (you need to install `sphinxcontrib.spelling` package for that):
-
-```
-make spelling
-```
-
 
 ## Changelog and Documentation
 
-Please do not forget to update the changelog (`docs/misc/changelog.rst`) and add documentation if needed.
+Please do not forget to update the changelog and add documentation if needed.
 A README is present in the `docs/` folder for instructions on how to build the documentation.
 
 

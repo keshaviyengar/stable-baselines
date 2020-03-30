@@ -1,24 +1,17 @@
+from abc import ABC, abstractmethod
 import os
 import glob
-import json
-import zipfile
 import warnings
-from abc import ABC, abstractmethod
-from collections import OrderedDict, deque
-from typing import Union, List, Callable, Optional
+from collections import OrderedDict
 
-import gym
 import cloudpickle
 import numpy as np
+import gym
 import tensorflow as tf
 
-from stable_baselines.common.misc_util import set_global_seeds
-from stable_baselines.common.save_util import data_to_json, json_to_data, params_to_bytes, bytes_to_params
+from stable_baselines.common import set_global_seeds
 from stable_baselines.common.policies import get_policy_from_name, ActorCriticPolicy
-from stable_baselines.common.runners import AbstractEnvRunner
-from stable_baselines.common.vec_env import (VecEnvWrapper, VecEnv, DummyVecEnv,
-                                             VecNormalize, unwrap_vec_normalize)
-from stable_baselines.common.callbacks import BaseCallback, CallbackList, ConvertCallback
+from stable_baselines.common.vec_env import VecEnvWrapper, VecEnv, DummyVecEnv
 from stable_baselines import logger
 
 
@@ -32,16 +25,9 @@ class BaseRLModel(ABC):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param requires_vec_env: (bool) Does this model require a vectorized environment
     :param policy_base: (BasePolicy) the base policy used by this method
-    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
-    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
-        If None (default), use random seed. Note that if you want completely deterministic
-        results, you must set `n_cpu_tf_sess` to 1.
-    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
-        If None, the number of cpu of the current machine will be used.
     """
 
-    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base,
-                 policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
+    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base, policy_kwargs=None):
         if isinstance(policy, str) and policy_base is not None:
             self.policy = get_policy_from_name(policy_base, policy)
         else:
@@ -58,11 +44,7 @@ class BaseRLModel(ABC):
         self.graph = None
         self.sess = None
         self.params = None
-        self.seed = seed
         self._param_load_ops = None
-        self.n_cpu_tf_sess = n_cpu_tf_sess
-        self.episode_reward = None
-        self.ep_info_buf = None
 
         if env is not None:
             if isinstance(env, str):
@@ -76,12 +58,7 @@ class BaseRLModel(ABC):
                 if isinstance(env, VecEnv):
                     self.n_envs = env.num_envs
                 else:
-                    # The model requires a VecEnv
-                    # wrap it in a DummyVecEnv to avoid error
-                    self.env = DummyVecEnv([lambda: env])
-                    if self.verbose >= 1:
-                        print("Wrapping the env in a DummyVecEnv.")
-                    self.n_envs = 1
+                    raise ValueError("Error: the model requires a vectorized environment, please use a VecEnv wrapper.")
             else:
                 if isinstance(env, VecEnv):
                     if env.num_envs == 1:
@@ -92,9 +69,6 @@ class BaseRLModel(ABC):
                                          " environment.")
                 self.n_envs = 1
 
-        # Get VecNormalize object if it exists
-        self._vec_normalize_env = unwrap_vec_normalize(self.env)
-
     def get_env(self):
         """
         returns the current environment (can be None if not defined)
@@ -102,15 +76,6 @@ class BaseRLModel(ABC):
         :return: (Gym Environment) The current environment
         """
         return self.env
-
-    def get_vec_normalize_env(self) -> Optional[VecNormalize]:
-        """
-        Return the ``VecNormalize`` wrapper of the training env
-        if it exists.
-
-        :return: Optional[VecNormalize] The ``VecNormalize`` env.
-        """
-        return self._vec_normalize_env
 
     def set_env(self, env):
         """
@@ -155,11 +120,6 @@ class BaseRLModel(ABC):
             self.n_envs = 1
 
         self.env = env
-        self._vec_normalize_env = unwrap_vec_normalize(env)
-
-        # Invalidated by environment change.
-        self.episode_reward = None
-        self.ep_info_buf = None
 
     def _init_num_timesteps(self, reset_num_timesteps=True):
         """
@@ -183,51 +143,17 @@ class BaseRLModel(ABC):
         """
         pass
 
-    def _init_callback(self,
-                      callback: Union[None, Callable, List[BaseCallback], BaseCallback]
-                      ) -> BaseCallback:
+    def _setup_learn(self, seed):
         """
-        :param callback: (Union[None, Callable, List[BaseCallback], BaseCallback])
-        :return: (BaseCallback)
-        """
-        # Convert a list of callbacks into a callback
-        if isinstance(callback, list):
-            callback = CallbackList(callback)
-        # Convert functional callback to object
-        if not isinstance(callback, BaseCallback):
-            callback = ConvertCallback(callback)
+        check the environment, set the seed, and set the logger
 
-        callback.init_callback(self)
-        return callback
-
-    def set_random_seed(self, seed: Optional[int]) -> None:
-        """
-        :param seed: (Optional[int]) Seed for the pseudo-random generators. If None,
-            do not change the seeds.
-        """
-        # Ignore if the seed is None
-        if seed is None:
-            return
-        # Seed python, numpy and tf random generator
-        set_global_seeds(seed)
-        if self.env is not None:
-            self.env.seed(seed)
-            # Seed the action space
-            # useful when selecting random actions
-            self.env.action_space.seed(seed)
-        self.action_space.seed(seed)
-
-    def _setup_learn(self):
-        """
-        Check the environment.
+        :param seed: (int) the seed value
         """
         if self.env is None:
             raise ValueError("Error: cannot train the model without a valid environment, please set an environment with"
                              "set_env(self, env) method.")
-        if self.episode_reward is None:
-            self.episode_reward = np.zeros((self.n_envs,))
-        if self.ep_info_buf is None:
-            self.ep_info_buf = deque(maxlen=100)
+        if seed is not None:
+            set_global_seeds(seed)
 
     @abstractmethod
     def get_parameter_list(self):
@@ -277,9 +203,9 @@ class BaseRLModel(ABC):
         """
         Return the placeholders needed for the pretraining:
         - obs_ph: observation placeholder
-        - actions_ph will be population with an action from the environment
+        - actions_ph will be population with an action from the environement
             (from the expert dataset)
-        - deterministic_actions_ph: e.g., in the case of a Gaussian policy,
+        - deterministic_actions_ph: e.g., in the case of a gaussian policy,
             the mean.
 
         :return: ((tf.placeholder)) (obs_ph, actions_ph, deterministic_actions_ph)
@@ -375,18 +301,15 @@ class BaseRLModel(ABC):
         return self
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None, log_interval=100, tb_log_name="run",
+    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="run",
               reset_num_timesteps=True):
         """
         Return a trained model.
 
         :param total_timesteps: (int) The total number of samples to train on
-        :param callback: (Union[callable, [callable], BaseCallback])
-            function called at every steps with state of the algorithm.
+        :param seed: (int) The initial seed for training, if None: keep current seed
+        :param callback: (function (dict, dict)) -> boolean function called at every steps with state of the algorithm.
             It takes the local and global variables. If it returns False, training is aborted.
-            When the callback inherits from BaseCallback, you will have access
-            to additional stages of the training (training start/end),
-            please read the documentation for more details.
         :param log_interval: (int) The number of timesteps before logging.
         :param tb_log_name: (str) the name of the run for tensorboard log
         :param reset_num_timesteps: (bool) whether or not to reset the current timestep number (used in logging)
@@ -459,6 +382,7 @@ class BaseRLModel(ABC):
         if self._param_load_ops is None:
             self._setup_load_operations()
 
+        params = None
         if isinstance(load_path_or_dict, dict):
             # Assume `load_path_or_dict` is dict of variable.name -> ndarrays we want to load
             params = load_path_or_dict
@@ -475,11 +399,8 @@ class BaseRLModel(ABC):
                 params[param_name] = load_path_or_dict[i]
         else:
             # Assume a filepath or file-like.
-            # Use existing deserializer to load the parameters.
-            # We only need the parameters part of the file, so
-            # only load that part.
-            _, params = BaseRLModel._load_from_file(load_path_or_dict, load_data=False)
-            params = dict(params)
+            # Use existing deserializer to load the parameters
+            _, params = BaseRLModel._load_from_file(load_path_or_dict)
 
         feed_dict = {}
         param_update_ops = []
@@ -501,42 +422,29 @@ class BaseRLModel(ABC):
         self.sess.run(param_update_ops, feed_dict=feed_dict)
 
     @abstractmethod
-    def save(self, save_path, cloudpickle=False):
+    def save(self, save_path):
         """
         Save the current parameters to file
 
-        :param save_path: (str or file-like) The save location
-        :param cloudpickle: (bool) Use older cloudpickle format instead of zip-archives.
+        :param save_path: (str or file-like object) the save location
         """
         raise NotImplementedError()
 
     @classmethod
     @abstractmethod
-    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+    def load(cls, load_path, env=None, **kwargs):
         """
         Load the model from file
 
         :param load_path: (str or file-like) the saved parameter location
-        :param env: (Gym Environment) the new environment to run the loaded model on
+        :param env: (Gym Envrionment) the new environment to run the loaded model on
             (can be None if you only need prediction from a trained model)
-        :param custom_objects: (dict) Dictionary of objects to replace
-            upon loading. If a variable is present in this dictionary as a
-            key, it will not be deserialized and the corresponding item
-            will be used instead. Similar to custom_objects in
-            `keras.models.load_model`. Useful when you have an object in
-            file that can not be deserialized.
         :param kwargs: extra arguments to change the model when loading
         """
         raise NotImplementedError()
 
     @staticmethod
-    def _save_to_file_cloudpickle(save_path, data=None, params=None):
-        """Legacy code for saving models with cloudpickle
-
-        :param save_path: (str or file-like) Where to store the model
-        :param data: (OrderedDict) Class parameters being stored
-        :param params: (OrderedDict) Model parameters being stored
-        """
+    def _save_to_file(save_path, data=None, params=None):
         if isinstance(save_path, str):
             _, ext = os.path.splitext(save_path)
             if ext == "":
@@ -549,67 +457,7 @@ class BaseRLModel(ABC):
             cloudpickle.dump((data, params), save_path)
 
     @staticmethod
-    def _save_to_file_zip(save_path, data=None, params=None):
-        """Save model to a .zip archive
-
-        :param save_path: (str or file-like) Where to store the model
-        :param data: (OrderedDict) Class parameters being stored
-        :param params: (OrderedDict) Model parameters being stored
-        """
-        # data/params can be None, so do not
-        # try to serialize them blindly
-        if data is not None:
-            serialized_data = data_to_json(data)
-        if params is not None:
-            serialized_params = params_to_bytes(params)
-            # We also have to store list of the parameters
-            # to store the ordering for OrderedDict.
-            # We can trust these to be strings as they
-            # are taken from the Tensorflow graph.
-            serialized_param_list = json.dumps(
-                list(params.keys()),
-                indent=4
-            )
-
-        # Check postfix if save_path is a string
-        if isinstance(save_path, str):
-            _, ext = os.path.splitext(save_path)
-            if ext == "":
-                save_path += ".zip"
-
-        # Create a zip-archive and write our objects
-        # there. This works when save_path
-        # is either str or a file-like
-        with zipfile.ZipFile(save_path, "w") as file_:
-            # Do not try to save "None" elements
-            if data is not None:
-                file_.writestr("data", serialized_data)
-            if params is not None:
-                file_.writestr("parameters", serialized_params)
-                file_.writestr("parameter_list", serialized_param_list)
-
-    @staticmethod
-    def _save_to_file(save_path, data=None, params=None, cloudpickle=False):
-        """Save model to a zip archive or cloudpickle file.
-
-        :param save_path: (str or file-like) Where to store the model
-        :param data: (OrderedDict) Class parameters being stored
-        :param params: (OrderedDict) Model parameters being stored
-        :param cloudpickle: (bool) Use old cloudpickle format
-            (stable-baselines<=2.7.0) instead of a zip archive.
-        """
-        if cloudpickle:
-            BaseRLModel._save_to_file_cloudpickle(save_path, data, params)
-        else:
-            BaseRLModel._save_to_file_zip(save_path, data, params)
-
-    @staticmethod
-    def _load_from_file_cloudpickle(load_path):
-        """Legacy code for loading older models stored with cloudpickle
-
-        :param load_path: (str or file-like) where from to load the file
-        :return: (dict, OrderedDict) Class parameters and model parameters
-        """
+    def _load_from_file(load_path):
         if isinstance(load_path, str):
             if not os.path.exists(load_path):
                 if os.path.exists(load_path + ".pkl"):
@@ -617,74 +465,11 @@ class BaseRLModel(ABC):
                 else:
                     raise ValueError("Error: the file {} could not be found".format(load_path))
 
-            with open(load_path, "rb") as file_:
-                data, params = cloudpickle.load(file_)
+            with open(load_path, "rb") as file:
+                data, params = cloudpickle.load(file)
         else:
             # Here load_path is a file-like object, not a path
             data, params = cloudpickle.load(load_path)
-
-        return data, params
-
-    @staticmethod
-    def _load_from_file(load_path, load_data=True, custom_objects=None):
-        """Load model data from a .zip archive
-
-        :param load_path: (str or file-like) Where to load model from
-        :param load_data: (bool) Whether we should load and return data
-            (class parameters). Mainly used by `load_parameters` to
-            only load model parameters (weights).
-        :param custom_objects: (dict) Dictionary of objects to replace
-            upon loading. If a variable is present in this dictionary as a
-            key, it will not be deserialized and the corresponding item
-            will be used instead. Similar to custom_objects in
-            `keras.models.load_model`. Useful when you have an object in
-            file that can not be deserialized.
-        :return: (dict, OrderedDict) Class parameters and model parameters
-        """
-        # Check if file exists if load_path is
-        # a string
-        if isinstance(load_path, str):
-            if not os.path.exists(load_path):
-                if os.path.exists(load_path + ".zip"):
-                    load_path += ".zip"
-                else:
-                    raise ValueError("Error: the file {} could not be found".format(load_path))
-
-        # Open the zip archive and load data.
-        try:
-            with zipfile.ZipFile(load_path, "r") as file_:
-                namelist = file_.namelist()
-                # If data or parameters is not in the
-                # zip archive, assume they were stored
-                # as None (_save_to_file allows this).
-                data = None
-                params = None
-                if "data" in namelist and load_data:
-                    # Load class parameters and convert to string
-                    # (Required for json library in Python 3.5)
-                    json_data = file_.read("data").decode()
-                    data = json_to_data(json_data, custom_objects=custom_objects)
-
-                if "parameters" in namelist:
-                    # Load parameter list and and parameters
-                    parameter_list_json = file_.read("parameter_list").decode()
-                    parameter_list = json.loads(parameter_list_json)
-                    serialized_params = file_.read("parameters")
-                    params = bytes_to_params(
-                        serialized_params, parameter_list
-                    )
-        except zipfile.BadZipFile:
-            # load_path wasn't a zip file. Possibly a cloudpickle
-            # file. Show a warning and fall back to loading cloudpickle.
-            warnings.warn("It appears you are loading from a file with old format. " +
-                          "Older cloudpickle format has been replaced with zip-archived " +
-                          "models. Consider saving the model with new format.",
-                          DeprecationWarning)
-            # Attempt loading with the cloudpickle format.
-            # If load_path is file-like, seek back to beginning of file
-            if not isinstance(load_path, str):
-                load_path.seek(0)
-            data, params = BaseRLModel._load_from_file_cloudpickle(load_path)
 
         return data, params
 
@@ -760,50 +545,25 @@ class ActorCriticRLModel(BaseRLModel):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param policy_base: (BasePolicy) the base policy used by this method (default=ActorCriticPolicy)
     :param requires_vec_env: (bool) Does this model require a vectorized environment
-    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
-    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
-        If None (default), use random seed. Note that if you want completely deterministic
-        results, you must set `n_cpu_tf_sess` to 1.
-    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
-        If None, the number of cpu of the current machine will be used.
     """
 
     def __init__(self, policy, env, _init_setup_model, verbose=0, policy_base=ActorCriticPolicy,
-                 requires_vec_env=False, policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
+                 requires_vec_env=False, policy_kwargs=None):
         super(ActorCriticRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                                 policy_base=policy_base, policy_kwargs=policy_kwargs,
-                                                 seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
+                                                 policy_base=policy_base, policy_kwargs=policy_kwargs)
 
         self.sess = None
         self.initial_state = None
         self.step = None
         self.proba_step = None
         self.params = None
-        self._runner = None
-
-    def _make_runner(self) -> AbstractEnvRunner:
-        """Builds a new Runner.
-
-        Lazily called whenever `self.runner` is accessed and `self._runner is None`.
-        """
-        raise NotImplementedError("This model is not configured to use a Runner")
-
-    @property
-    def runner(self) -> AbstractEnvRunner:
-        if self._runner is None:
-            self._runner = self._make_runner()
-        return self._runner
-
-    def set_env(self, env):
-        self._runner = None  # New environment invalidates `self._runner`.
-        super().set_env(env)
 
     @abstractmethod
     def setup_model(self):
         pass
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None,
+    def learn(self, total_timesteps, callback=None, seed=None,
               log_interval=100, tb_log_name="run", reset_num_timesteps=True):
         pass
 
@@ -914,26 +674,20 @@ class ActorCriticRLModel(BaseRLModel):
         return self.params
 
     @abstractmethod
-    def save(self, save_path, cloudpickle=False):
+    def save(self, save_path):
         pass
 
     @classmethod
-    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+    def load(cls, load_path, env=None, **kwargs):
         """
         Load the model from file
 
         :param load_path: (str or file-like) the saved parameter location
-        :param env: (Gym Environment) the new environment to run the loaded model on
+        :param env: (Gym Envrionment) the new environment to run the loaded model on
             (can be None if you only need prediction from a trained model)
-        :param custom_objects: (dict) Dictionary of objects to replace
-            upon loading. If a variable is present in this dictionary as a
-            key, it will not be deserialized and the corresponding item
-            will be used instead. Similar to custom_objects in
-            `keras.models.load_model`. Useful when you have an object in
-            file that can not be deserialized.
         :param kwargs: extra arguments to change the model when loading
         """
-        data, params = cls._load_from_file(load_path, custom_objects=custom_objects)
+        data, params = cls._load_from_file(load_path)
 
         if 'policy_kwargs' in kwargs and kwargs['policy_kwargs'] != data['policy_kwargs']:
             raise ValueError("The specified policy kwargs do not equal the stored policy kwargs. "
@@ -962,20 +716,12 @@ class OffPolicyRLModel(BaseRLModel):
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param requires_vec_env: (bool) Does this model require a vectorized environment
     :param policy_base: (BasePolicy) the base policy used by this method
-    :param policy_kwargs: (dict) additional arguments to be passed to the policy on creation
-    :param seed: (int) Seed for the pseudo-random generators (python, numpy, tensorflow).
-        If None (default), use random seed. Note that if you want completely deterministic
-        results, you must set `n_cpu_tf_sess` to 1.
-    :param n_cpu_tf_sess: (int) The number of threads for TensorFlow operations
-        If None, the number of cpu of the current machine will be used.
     """
 
     def __init__(self, policy, env, replay_buffer=None, _init_setup_model=False, verbose=0, *,
-                 requires_vec_env=False, policy_base=None,
-                 policy_kwargs=None, seed=None, n_cpu_tf_sess=None):
+                 requires_vec_env=False, policy_base=None, policy_kwargs=None):
         super(OffPolicyRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                               policy_base=policy_base, policy_kwargs=policy_kwargs,
-                                               seed=seed, n_cpu_tf_sess=n_cpu_tf_sess)
+                                               policy_base=policy_base, policy_kwargs=policy_kwargs)
 
         self.replay_buffer = replay_buffer
 
@@ -984,7 +730,7 @@ class OffPolicyRLModel(BaseRLModel):
         pass
 
     @abstractmethod
-    def learn(self, total_timesteps, callback=None,
+    def learn(self, total_timesteps, callback=None, seed=None,
               log_interval=100, tb_log_name="run", reset_num_timesteps=True, replay_wrapper=None):
         pass
 
@@ -997,26 +743,20 @@ class OffPolicyRLModel(BaseRLModel):
         pass
 
     @abstractmethod
-    def save(self, save_path, cloudpickle=False):
+    def save(self, save_path):
         pass
 
     @classmethod
-    def load(cls, load_path, env=None, custom_objects=None, **kwargs):
+    def load(cls, load_path, env=None, **kwargs):
         """
         Load the model from file
 
         :param load_path: (str or file-like) the saved parameter location
-        :param env: (Gym Environment) the new environment to run the loaded model on
+        :param env: (Gym Envrionment) the new environment to run the loaded model on
             (can be None if you only need prediction from a trained model)
-        :param custom_objects: (dict) Dictionary of objects to replace
-            upon loading. If a variable is present in this dictionary as a
-            key, it will not be deserialized and the corresponding item
-            will be used instead. Similar to custom_objects in
-            `keras.models.load_model`. Useful when you have an object in
-            file that can not be deserialized.
         :param kwargs: extra arguments to change the model when loading
         """
-        data, params = cls._load_from_file(load_path, custom_objects=custom_objects)
+        data, params = cls._load_from_file(load_path)
 
         if 'policy_kwargs' in kwargs and kwargs['policy_kwargs'] != data['policy_kwargs']:
             raise ValueError("The specified policy kwargs do not equal the stored policy kwargs. "
@@ -1042,9 +782,6 @@ class _UnvecWrapper(VecEnvWrapper):
         """
         super().__init__(venv)
         assert venv.num_envs == 1, "Error: cannot unwrap a environment wrapper that has more than one environment."
-
-    def seed(self, seed=None):
-        return self.venv.env_method('seed', seed)
 
     def __getattr__(self, attr):
         if attr in self.__dict__:

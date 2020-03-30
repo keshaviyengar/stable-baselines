@@ -3,7 +3,7 @@ import shutil
 
 import pytest
 
-from stable_baselines import A2C, ACER, ACKTR, DQN, DDPG, PPO1, PPO2, SAC, TD3, TRPO
+from stable_baselines import A2C, ACER, ACKTR, DQN, DDPG, PPO1, PPO2, SAC, TRPO
 
 TENSORBOARD_DIR = '/tmp/tb_dir/'
 
@@ -19,7 +19,6 @@ MODEL_DICT = {
     'ppo1': (PPO1, 'CartPole-v1'),
     'ppo2': (PPO2, 'CartPole-v1'),
     'sac': (SAC, 'Pendulum-v0'),
-    'td3': (TD3, 'Pendulum-v0'),
     'trpo': (TRPO, 'CartPole-v1'),
 }
 
@@ -48,3 +47,5 @@ def test_multiple_runs(model_name):
     assert os.path.isdir(TENSORBOARD_DIR + logname + "_1")
     # Check that the log dir name increments correctly
     assert os.path.isdir(TENSORBOARD_DIR + logname + "_2")
+
+

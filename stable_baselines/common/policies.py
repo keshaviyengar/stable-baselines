@@ -6,8 +6,7 @@ import numpy as np
 import tensorflow as tf
 from gym.spaces import Discrete
 
-from stable_baselines.common.tf_util import batch_to_seq, seq_to_batch
-from stable_baselines.common.tf_layers import conv, linear, conv_to_fc, lstm
+from stable_baselines.a2c.utils import conv, linear, conv_to_fc, batch_to_seq, seq_to_batch, lstm
 from stable_baselines.common.distributions import make_proba_dist_type, CategoricalProbabilityDistribution, \
     MultiCategoricalProbabilityDistribution, DiagGaussianProbabilityDistribution, BernoulliProbabilityDistribution
 from stable_baselines.common.input import observation_input
@@ -102,7 +101,7 @@ class BasePolicy(ABC):
     :param reuse: (bool) If the policy is reusable or not
     :param scale: (bool) whether or not to scale the input
     :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
-        and the processed observation placeholder respectively
+        and the processed observation placeholder respectivly
     :param add_action_ph: (bool) whether or not to create an action placeholder
     """
 
@@ -172,9 +171,9 @@ class BasePolicy(ABC):
         # When using policy_kwargs parameter on model creation,
         # all keywords arguments must be consumed by the policy constructor except
         # the ones for the cnn_extractor network (cf nature_cnn()), where the keywords arguments
-        # are not passed explicitly (using **kwargs to forward the arguments)
+        # are not passed explicitely (using **kwargs to forward the arguments)
         # that's why there should be not kwargs left when using the mlp_extractor
-        # (in that case the keywords arguments are passed explicitly)
+        # (in that case the keywords arguments are passed explicitely)
         if feature_extraction == 'mlp' and len(kwargs) > 0:
             raise ValueError("Unknown keywords for policy: {}".format(kwargs))
 
@@ -228,7 +227,9 @@ class ActorCriticPolicy(BasePolicy):
         self._deterministic_action = None
 
     def _setup_init(self):
-        """Sets up the distributions, actions, and value."""
+        """
+        sets up the distibutions, actions, and value
+        """
         with tf.variable_scope("output", reuse=True):
             assert self.policy is not None and self.proba_distribution is not None and self.value_fn is not None
             self._action = self.proba_distribution.sample()
@@ -364,7 +365,7 @@ class RecurrentActorCriticPolicy(ActorCriticPolicy):
     def states_ph(self):
         """tf.Tensor: placeholder for states, shape (self.n_env, ) + state_shape."""
         return self._states_ph
-
+    
     @abstractmethod
     def value(self, obs, state=None, mask=None):
         """

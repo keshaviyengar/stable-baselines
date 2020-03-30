@@ -93,7 +93,7 @@ Goal Selection Strategies
 	:undoc-members:
 
 
-Goal Env Wrapper
+Gaol Env Wrapper
 ----------------
 
 .. autoclass:: HERGoalEnvWrapper

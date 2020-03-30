@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from mpi4py import MPI
-import mujoco_py  # pytype:disable=import-error
+import mujoco_py
 
 from stable_baselines.common import set_global_seeds
 from stable_baselines.common.policies import MlpPolicy

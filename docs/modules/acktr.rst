@@ -30,7 +30,7 @@ Can I use?
 Space         Action Observation
 ============= ====== ===========
 Discrete      ✔️      ✔️
-Box           ✔️       ✔️
+Box           ❌      ✔️
 MultiDiscrete ❌      ✔️
 MultiBinary   ❌      ✔️
 ============= ====== ===========
@@ -44,11 +44,12 @@ Example
   import gym
 
   from stable_baselines.common.policies import MlpPolicy, MlpLstmPolicy, MlpLnLstmPolicy
-  from stable_baselines.common import make_vec_env
+  from stable_baselines.common.vec_env import SubprocVecEnv
   from stable_baselines import ACKTR
 
   # multiprocess environment
-  env = make_vec_env('CartPole-v1', n_envs=4)
+  n_cpu = 4
+  env = SubprocVecEnv([lambda: gym.make('CartPole-v1') for i in range(n_cpu)])
 
   model = ACKTR(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=25000)

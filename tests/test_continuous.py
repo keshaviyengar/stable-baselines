@@ -5,23 +5,24 @@ import gym
 import pytest
 import numpy as np
 
-from stable_baselines import A2C, ACKTR, SAC, DDPG, PPO1, PPO2, TRPO, TD3
+from stable_baselines import A2C, SAC, DDPG, PPO1, PPO2, TRPO, TD3
 # TODO: add support for continuous actions
 # from stable_baselines.acer import ACER
+# from stable_baselines.acktr import ACKTR
+from stable_baselines.common import set_global_seeds
 from stable_baselines.common.vec_env import DummyVecEnv
 from stable_baselines.common.identity_env import IdentityEnvBox
 from stable_baselines.ddpg import AdaptiveParamNoiseSpec, NormalActionNoise
-from stable_baselines.common.evaluation import evaluate_policy
 from tests.test_common import _assert_eq
 
 
-N_EVAL_EPISODES = 20
+N_TRIALS = 1000
 NUM_TIMESTEPS = 15000
 
 MODEL_LIST = [
     A2C,
     # ACER,
-    ACKTR,
+    # ACKTR,
     DDPG,
     PPO1,
     PPO2,
@@ -44,13 +45,21 @@ def test_model_manipulation(request, model_class):
         env = DummyVecEnv([lambda: IdentityEnvBox(eps=0.5)])
 
         # create and train
-        model = model_class(policy="MlpPolicy", env=env, seed=0)
-        model.learn(total_timesteps=NUM_TIMESTEPS)
+        model = model_class(policy="MlpPolicy", env=env)
+        model.learn(total_timesteps=NUM_TIMESTEPS, seed=0)
 
-        acc_reward, _ = evaluate_policy(model, env, n_eval_episodes=N_EVAL_EPISODES)
+        # predict and measure the acc reward
+        acc_reward = 0
+        set_global_seeds(0)
+        obs = env.reset()
+        for _ in range(N_TRIALS):
+            action, _ = model.predict(obs)
+            obs, reward, _, _ = env.step(action)
+            acc_reward += reward
+        acc_reward = sum(acc_reward) / N_TRIALS
 
         # saving
-        model_fname = './test_model_{}.zip'.format(request.node.name)
+        model_fname = './test_model_{}.pkl'.format(request.node.name)
         model.save(model_fname)
 
         del model, env
@@ -62,9 +71,16 @@ def test_model_manipulation(request, model_class):
         env = DummyVecEnv([lambda: IdentityEnvBox(eps=0.5)])
         model.set_env(env)
 
-        loaded_acc_reward, _ = evaluate_policy(model, env, n_eval_episodes=N_EVAL_EPISODES)
-
+        # predict the same output before saving
+        loaded_acc_reward = 0
+        set_global_seeds(0)
         obs = env.reset()
+        for _ in range(N_TRIALS):
+            action, _ = model.predict(obs)
+            obs, reward, _, _ = env.step(action)
+            loaded_acc_reward += reward
+        loaded_acc_reward = sum(loaded_acc_reward) / N_TRIALS
+
         with pytest.warns(None) as record:
             act_prob = model.action_probability(obs)
 
@@ -100,7 +116,7 @@ def test_model_manipulation(request, model_class):
             "Error: the prediction seems to have changed between loading and saving"
 
         # learn post loading
-        model.learn(total_timesteps=100)
+        model.learn(total_timesteps=100, seed=0)
 
         # validate no reset post learning
         # This test was failing from time to time for no good reason
@@ -109,25 +125,27 @@ def test_model_manipulation(request, model_class):
         # loaded_acc_reward = 0
         # set_global_seeds(0)
         # obs = env.reset()
-        # for _ in range(N_EVAL_EPISODES):
+        # for _ in range(N_TRIALS):
         #     action, _ = model.predict(obs)
         #     obs, reward, _, _ = env.step(action)
         #     loaded_acc_reward += reward
-        # loaded_acc_reward = sum(loaded_acc_reward) / N_EVAL_EPISODES
+        # loaded_acc_reward = sum(loaded_acc_reward) / N_TRIALS
         # # assert <10% diff
         # assert abs(acc_reward - loaded_acc_reward) / max(acc_reward, loaded_acc_reward) < 0.1, \
         #     "Error: the prediction seems to have changed between pre learning and post learning"
 
         # predict new values
-
-        evaluate_policy(model, env, n_eval_episodes=N_EVAL_EPISODES)
+        obs = env.reset()
+        for _ in range(N_TRIALS):
+            action, _ = model.predict(obs)
+            obs, _, _, _ = env.step(action)
 
         # Free memory
         del model, env
 
     finally:
-        if os.path.exists(model_fname):
-            os.remove(model_fname)
+        if os.path.exists("./test_model"):
+            os.remove("./test_model")
 
 
 def test_ddpg():
@@ -160,9 +178,9 @@ def test_ddpg_normalization():
     model.learn(1000)
     obs_rms_params = model.sess.run(model.obs_rms_params)
     ret_rms_params = model.sess.run(model.ret_rms_params)
-    model.save('./test_ddpg.zip')
+    model.save('./test_ddpg.pkl')
 
-    loaded_model = DDPG.load('./test_ddpg.zip')
+    loaded_model = DDPG.load('./test_ddpg.pkl')
     obs_rms_params_2 = loaded_model.sess.run(loaded_model.obs_rms_params)
     ret_rms_params_2 = loaded_model.sess.run(loaded_model.ret_rms_params)
 
@@ -172,8 +190,8 @@ def test_ddpg_normalization():
 
     del model, loaded_model
 
-    if os.path.exists("./test_ddpg.zip"):
-        os.remove("./test_ddpg.zip")
+    if os.path.exists("./test_ddpg.pkl"):
+        os.remove("./test_ddpg.pkl")
 
 
 def test_ddpg_popart():

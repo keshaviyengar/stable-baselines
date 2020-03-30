@@ -17,9 +17,7 @@ Here is a quick example of how to train and run PPO2 on a cartpole environment:
   from stable_baselines import PPO2
 
   env = gym.make('CartPole-v1')
-  # Optional: PPO2 requires a vectorized environment to run
-  # the env is now wrapped automatically when passing it to the constructor
-  # env = DummyVecEnv([lambda: env])
+  env = DummyVecEnv([lambda: env])  # The algorithms require a vectorized environment to run
 
   model = PPO2(MlpPolicy, env, verbose=1)
   model.learn(total_timesteps=10000)
