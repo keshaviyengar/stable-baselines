@@ -381,9 +381,11 @@ class PPO2(ActorCriticRLModel):
                     logger.logkv("total_timesteps", self.num_timesteps)
                     logger.logkv("fps", fps)
                     logger.logkv("explained_variance", float(explained_var))
+                    logger.logkv("success_rate", np.mean(masks) * 100)
                     if len(self.ep_info_buf) > 0 and len(self.ep_info_buf[0]) > 0:
                         logger.logkv('ep_reward_mean', safe_mean([ep_info['r'] for ep_info in self.ep_info_buf]))
                         logger.logkv('ep_len_mean', safe_mean([ep_info['l'] for ep_info in self.ep_info_buf]))
+                        logger.logkv('ep_error_mean', safe_mean([ep_info['error'] for ep_info in self.ep_info_buf]))
                     logger.logkv('time_elapsed', t_start - t_first_start)
                     for (loss_val, loss_name) in zip(loss_vals, self.loss_names):
                         logger.logkv(loss_name, loss_val)
@@ -474,6 +476,8 @@ class Runner(AbstractEnvRunner):
             for info in infos:
                 maybe_ep_info = info.get('episode')
                 if maybe_ep_info is not None:
+                    if info.get('error') is not None:
+                        maybe_ep_info['error'] = info.get('error')
                     ep_infos.append(maybe_ep_info)
             mb_rewards.append(rewards)
         # batch of steps to batch of rollouts
