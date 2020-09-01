@@ -478,6 +478,10 @@ class Runner(AbstractEnvRunner):
                 if maybe_ep_info is not None:
                     if info.get('error') is not None:
                         maybe_ep_info['error'] = info.get('error')
+                    if info.get('achieved_goal') is not None:
+                        maybe_ep_info['achieved_goal'] = info.get('achieved_goal')
+                    if info.get('desired_goal') is not None:
+                        maybe_ep_info['desired_goal'] = info.get('desired_goal')
                     ep_infos.append(maybe_ep_info)
             mb_rewards.append(rewards)
         # batch of steps to batch of rollouts
