@@ -843,20 +843,24 @@ class DDPG(OffPolicyRLModel):
                 start_time = time.time()
 
                 epoch_episode_rewards = []
-                epoch_episode_errors = []
+                epoch_episode_errors_pos = []
+                epoch_episode_errors_orient = []
                 epoch_episode_steps = []
                 epoch_actor_losses = []
                 epoch_critic_losses = []
                 epoch_adaptive_distances = []
                 eval_episode_rewards = []
-                eval_episode_errors = []
+                eval_episode_errors_pos = []
+                eval_episode_errors_orient = []
                 eval_qs = []
                 epoch_actions = []
                 epoch_qs = []
                 epoch_episodes = 0
                 epoch = 0
-                train_goal_tol = 0
-                eval_goal_tol = 0
+                train_pos_tol = 0
+                train_orient_tol = 0
+                eval_pos_tol = 0
+                eval_orient_tol = 0
                 while True:
                     for _ in range(log_interval):
                         # Perform rollouts.
@@ -912,8 +916,10 @@ class DDPG(OffPolicyRLModel):
                             if done:
                                 # Episode done.
                                 epoch_episode_rewards.append(episode_reward)
-                                epoch_episode_errors.append(info['error'])
-                                train_goal_tol = info['goal_tolerance']
+                                epoch_episode_errors_pos.append(info['errors_pos'])
+                                epoch_episode_errors_orient.append(info['errors_orient'])
+                                train_pos_tol = info['position_tolerance']
+                                train_orient_tol = info['orientation_tolerance']
                                 episode_rewards_history.append(episode_reward)
                                 epoch_episode_steps.append(episode_step)
                                 episode_reward = 0.
@@ -975,8 +981,10 @@ class DDPG(OffPolicyRLModel):
                                     if not isinstance(self.env, VecEnv):
                                         eval_obs = self.eval_env.reset()
                                     eval_episode_rewards.append(eval_episode_reward)
-                                    eval_episode_errors.append(info['error'])
-                                    eval_goal_tol = info['goal_tolerance']
+                                    eval_episode_errors_pos.append(info['errors_pos'])
+                                    eval_episode_errors_orient.append(info['errors_orient'])
+                                    eval_pos_tol = info['position_tolerance']
+                                    eval_orient_tol = info['orientation_tolerance']
                                     eval_episode_rewards_history.append(eval_episode_reward)
                                     eval_episode_reward = 0.
 
@@ -988,14 +996,17 @@ class DDPG(OffPolicyRLModel):
                     combined_stats = stats.copy()
                     combined_stats['rollout/return'] = np.mean(epoch_episode_rewards)
                     combined_stats['rollout/return_history'] = np.mean(episode_rewards_history)
-                    combined_stats['rollout/errors'] = np.mean(epoch_episode_errors)
-                    combined_stats['rollout/errors_dev'] = np.std(epoch_episode_errors)
+                    combined_stats['rollout/errors_pos'] = np.mean(epoch_episode_errors_pos)
+                    combined_stats['rollout/errors_orient'] = np.mean(epoch_episode_errors_orient)
+                    combined_stats['rollout/errors_pos_dev'] = np.std(epoch_episode_errors_pos)
+                    combined_stats['rollout/errors_orient_dev'] = np.std(epoch_episode_errors_orient)
                     combined_stats['rollout/episode_steps'] = np.mean(epoch_episode_steps)
                     combined_stats['rollout/actions_mean'] = np.mean(epoch_actions)
                     combined_stats['rollout/Q_mean'] = np.mean(epoch_qs)
                     combined_stats['train/loss_actor'] = np.mean(epoch_actor_losses)
                     combined_stats['train/loss_critic'] = np.mean(epoch_critic_losses)
-                    combined_stats['train/goal_tolerance'] = train_goal_tol
+                    combined_stats['train/position_tolerance'] = train_pos_tol
+                    combined_stats['train/orient_tolerance'] = train_orient_tol
                     if len(epoch_adaptive_distances) != 0:
                         combined_stats['train/param_noise_distance'] = np.mean(epoch_adaptive_distances)
                     combined_stats['total/duration'] = duration
@@ -1007,11 +1018,14 @@ class DDPG(OffPolicyRLModel):
                     if self.eval_env is not None:
                         combined_stats['eval/return'] = np.mean(eval_episode_rewards)
                         combined_stats['eval/return_history'] = np.mean(eval_episode_rewards_history)
-                        combined_stats['eval/errors'] = np.mean(eval_episode_errors)
-                        combined_stats['eval/errors_dev'] = np.std(eval_episode_errors)
+                        combined_stats['eval/errors_pos'] = np.mean(eval_episode_errors_pos)
+                        combined_stats['eval/errors_orient'] = np.mean(eval_episode_errors_orient)
+                        combined_stats['eval/errors_pos_dev'] = np.std(eval_episode_errors_pos)
+                        combined_stats['eval/errors_orient_dev'] = np.std(eval_episode_errors_orient)
                         combined_stats['eval/Q'] = np.mean(eval_qs)
                         combined_stats['eval/episodes'] = len(eval_episode_rewards)
-                        combined_stats['eval/goal_tolerance'] = eval_goal_tol
+                        combined_stats['eval/position_tolerance'] = eval_pos_tol
+                        combined_stats['eval/orientation_tolerance'] = eval_orient_tol
 
                     def as_scalar(scalar):
                         """
